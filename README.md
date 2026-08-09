@@ -51,4 +51,4 @@ the exit status is non-zero if any file or recursive path fails.
 
 Licensed under the [MIT License](LICENSE).
 
-Third-party license notices are provided in [THIRD_PARTY_LICENSES.html](THIRD_PARTY_LICENSES.html).
+Third-party license information and license texts are provided in [thirdparty/README.md](thirdparty/README.md).
