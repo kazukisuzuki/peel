@@ -8,18 +8,15 @@ publish = false
 
 [dependencies]
 anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", default-features = false, features = ["std", "help", "usage", "error-context", "suggestions"] }
 libc = "0.2"
 lexical-sort = "0.3"
 mozjpeg-sys = { version = "2", default-features = false, features = ["unwinding"] }
-rayon = "1"
 tempfile = "3"
 walkdir = "2"
 
 [dev-dependencies]
-assert_cmd = "2"
-jpeg-decoder = "0.3"
-predicates = "3"
+jpeg-decoder = { version = "0.3", default-features = false }
 
 [profile.release]
 codegen-units = 1

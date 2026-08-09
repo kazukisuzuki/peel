@@ -2,36 +2,19 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use anyhow::{Context, Result, bail};
-use clap::Parser;
+use clap::{Arg, ArgAction, Command, value_parser};
 use lexical_sort::{PathSort, natural_lexical_cmp};
-use optijpeg::{Status, optimize_file};
-use rayon::prelude::*;
+use optijpeg::{Optimization, Status, optimize_file};
 use walkdir::WalkDir;
 
-#[derive(Debug, Parser)]
-#[command(
-    version,
-    about = "Optimize JPEG files losslessly in place",
-    after_help = "Only files ending in .jpg or .jpeg (case-insensitive) are processed. Directories are accepted only as recursive search roots; symbolic links are not followed."
-)]
+#[derive(Debug)]
 struct Cli {
-    /// JPEG files to optimize in place
-    #[arg(
-        value_name = "JPEG",
-        required_unless_present = "recursive",
-        conflicts_with = "recursive"
-    )]
     files: Vec<PathBuf>,
-
-    /// Recursively optimize JPEG files below one or more paths
-    #[arg(
-        short = 'r',
-        long = "recursive",
-        value_name = "PATH",
-        num_args = 1..
-    )]
     recursive: Vec<PathBuf>,
 }
 
@@ -44,7 +27,7 @@ struct Summary {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let (files, discovery_errors) = discover_files(&cli.files, &cli.recursive);
     let summary = Summary {
         failed: discovery_errors.len(),
@@ -55,13 +38,7 @@ fn main() -> ExitCode {
         eprintln!("[ERROR] {error:#}");
     }
 
-    let results: Vec<_> = files
-        .into_par_iter()
-        .map(|path| {
-            let result = optimize_file(&path);
-            (path, result)
-        })
-        .collect();
+    let results = optimize_files(files);
 
     let mut summary = summary;
     for (path, result) in results {
@@ -117,6 +94,83 @@ fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+fn parse_cli() -> Cli {
+    let mut matches = Command::new(env!("CARGO_PKG_NAME"))
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Optimize JPEG files losslessly in place")
+        .arg(
+            Arg::new("files")
+                .value_name("JPEG")
+                .help("JPEG files to optimize in place")
+                .value_parser(value_parser!(PathBuf))
+                .num_args(1..)
+                .action(ArgAction::Append)
+                .required_unless_present("recursive")
+                .conflicts_with("recursive"),
+        )
+        .arg(
+            Arg::new("recursive")
+                .short('r')
+                .long("recursive")
+                .value_name("PATH")
+                .help("Recursively optimize JPEG files below one or more paths")
+                .value_parser(value_parser!(PathBuf))
+                .num_args(1..)
+                .action(ArgAction::Append),
+        )
+        .get_matches();
+
+    Cli {
+        files: matches
+            .remove_many("files")
+            .map(Iterator::collect)
+            .unwrap_or_default(),
+        recursive: matches
+            .remove_many("recursive")
+            .map(Iterator::collect)
+            .unwrap_or_default(),
+    }
+}
+
+fn optimize_files(files: Vec<PathBuf>) -> Vec<(PathBuf, Result<Optimization>)> {
+    let next = AtomicUsize::new(0);
+    let results: Vec<OnceLock<Result<Optimization>>> =
+        (0..files.len()).map(|_| OnceLock::new()).collect();
+    let worker_count = thread::available_parallelism()
+        .map_or(1, usize::from)
+        .min(files.len());
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = files.get(index) else {
+                        break;
+                    };
+                    let result = optimize_file(path);
+                    results[index]
+                        .set(result)
+                        .expect("worker produced a duplicate result");
+                }
+            });
+        }
+    });
+
+    files
+        .into_iter()
+        .zip(results)
+        .map(|(path, result)| {
+            (
+                path,
+                result
+                    .into_inner()
+                    .expect("worker did not produce an optimization result"),
+            )
+        })
+        .collect()
 }
 
 fn format_number(value: impl ToString) -> String {

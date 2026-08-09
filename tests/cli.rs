@@ -3,10 +3,9 @@ use std::fs;
 use std::os::unix::fs::symlink;
 #[cfg(windows)]
 use std::os::windows::fs::symlink_file as symlink;
+use std::process::{Command, Output};
 
-use assert_cmd::Command;
 use jpeg_decoder::Decoder;
-use predicates::prelude::*;
 
 fn sample() -> &'static [u8] {
     include_bytes!("fixtures/sample.jpg")
@@ -17,6 +16,28 @@ fn decode(jpeg: &[u8]) -> Vec<u8> {
     decoder.decode().expect("test JPEG should decode")
 }
 
+fn optijpeg() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_optijpeg"))
+}
+
+fn assert_success(output: &Output) {
+    assert!(
+        output.status.success(),
+        "command failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn assert_failure(output: &Output) {
+    assert!(
+        !output.status.success(),
+        "command unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
 #[test]
 fn produces_an_optimized_progressive_without_changing_pixels() {
     let directory = tempfile::tempdir().unwrap();
@@ -25,13 +46,17 @@ fn produces_an_optimized_progressive_without_changing_pixels() {
     let original_pixels = decode(sample());
     let original_size = sample().len();
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&target)
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(": 165 KiB -> "))
-        .stdout(predicate::str::contains("Done: 1 optimized"));
+    let output = optijpeg().arg(&target).output().unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(": 165 KiB -> "),
+        "unexpected stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Done: 1 optimized"),
+        "unexpected stdout:\n{stdout}"
+    );
 
     let optimized = fs::read(&target).unwrap();
     assert!(optimized.len() < original_size);
@@ -48,14 +73,18 @@ fn recursively_processes_jpg_and_jpeg_only() {
     fs::write(second.path().join("two.jpeg"), sample()).unwrap();
     fs::write(second.path().join("ignored.png"), sample()).unwrap();
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
+    let output = optijpeg()
         .arg("-r")
         .arg(first.path())
         .arg(second.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Done: 2 optimized"));
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Done: 2 optimized"),
+        "unexpected stdout:\n{stdout}"
+    );
 
     assert!(fs::metadata(first.path().join("one.JPG")).unwrap().len() < sample().len() as u64);
     assert!(fs::metadata(second.path().join("two.jpeg")).unwrap().len() < sample().len() as u64);
@@ -73,14 +102,9 @@ fn prints_results_in_natural_path_order() {
     fs::write(&second, sample()).unwrap();
     fs::write(&tenth, sample()).unwrap();
 
-    let output = Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&tenth)
-        .arg(&second)
-        .output()
-        .unwrap();
+    let output = optijpeg().arg(&tenth).arg(&second).output().unwrap();
 
-    assert!(output.status.success());
+    assert_success(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let second_log = format!("[OK] {}:", second.display());
     let tenth_log = format!("[OK] {}:", tenth.display());
@@ -96,14 +120,13 @@ fn rejects_direct_files_without_a_jpeg_extension() {
     let target = directory.path().join("image.png");
     fs::write(&target, sample()).unwrap();
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&target)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "file must have a .jpg or .jpeg extension",
-        ));
+    let output = optijpeg().arg(&target).output().unwrap();
+    assert_failure(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("file must have a .jpg or .jpeg extension"),
+        "unexpected stderr:\n{stderr}"
+    );
 }
 
 #[test]
@@ -120,12 +143,13 @@ fn rejects_direct_symbolic_links() {
         panic!("failed to create test symbolic link: {error}");
     }
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&link)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("symbolic links are not supported"));
+    let output = optijpeg().arg(&link).output().unwrap();
+    assert_failure(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("symbolic links are not supported"),
+        "unexpected stderr:\n{stderr}"
+    );
 
     assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
     assert_eq!(fs::read(target).unwrap(), sample());
@@ -138,12 +162,10 @@ fn invalid_jpeg_is_not_replaced() {
     let contents = b"not a jpeg";
     fs::write(&target, contents).unwrap();
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&target)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("[ERROR]"));
+    let output = optijpeg().arg(&target).output().unwrap();
+    assert_failure(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("[ERROR]"), "unexpected stderr:\n{stderr}");
 
     assert_eq!(fs::read(target).unwrap(), contents);
 }
@@ -165,11 +187,8 @@ fn strips_app_metadata() {
     jpeg.extend_from_slice(&sample()[2..]);
     fs::write(&target, &jpeg).unwrap();
 
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&target)
-        .assert()
-        .success();
+    let output = optijpeg().arg(&target).output().unwrap();
+    assert_success(&output);
 
     let optimized = fs::read(&target).unwrap();
     assert!(

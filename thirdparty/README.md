@@ -5,34 +5,10 @@ This directory lists third-party license information.
 This software is based in part on the work of the Independent JPEG Group.
 
 
-## anstream
-
-- Upstream: https://github.com/rust-cli/anstyle
-- License: MIT ([LICENSE-MIT](anstream/LICENSE-MIT))
-
-
 ## anstyle
 
 - Upstream: https://github.com/rust-cli/anstyle
 - License: MIT ([LICENSE-MIT](anstyle/LICENSE-MIT))
-
-
-## anstyle-parse
-
-- Upstream: https://github.com/rust-cli/anstyle
-- License: MIT ([LICENSE-MIT](anstyle-parse/LICENSE-MIT))
-
-
-## anstyle-query
-
-- Upstream: https://github.com/rust-cli/anstyle
-- License: MIT ([LICENSE-MIT](anstyle-query/LICENSE-MIT))
-
-
-## anstyle-wincon
-
-- Upstream: https://github.com/rust-cli/anstyle
-- License: MIT ([LICENSE-MIT](anstyle-wincon/LICENSE-MIT))
 
 
 ## any_ascii
@@ -71,46 +47,10 @@ This software is based in part on the work of the Independent JPEG Group.
 - License: MIT ([LICENSE-MIT](clap_builder/LICENSE-MIT))
 
 
-## clap_derive
-
-- Upstream: https://github.com/clap-rs/clap
-- License: MIT ([LICENSE-MIT](clap_derive/LICENSE-MIT))
-
-
 ## clap_lex
 
 - Upstream: https://github.com/clap-rs/clap
 - License: MIT ([LICENSE-MIT](clap_lex/LICENSE-MIT))
-
-
-## colorchoice
-
-- Upstream: https://github.com/rust-cli/anstyle
-- License: MIT ([LICENSE-MIT](colorchoice/LICENSE-MIT))
-
-
-## crossbeam-deque
-
-- Upstream: https://github.com/crossbeam-rs/crossbeam
-- License: MIT ([LICENSE-MIT](crossbeam-deque/LICENSE-MIT))
-
-
-## crossbeam-epoch
-
-- Upstream: https://github.com/crossbeam-rs/crossbeam
-- License: MIT ([LICENSE-MIT](crossbeam-epoch/LICENSE-MIT))
-
-
-## crossbeam-utils
-
-- Upstream: https://github.com/crossbeam-rs/crossbeam
-- License: MIT ([LICENSE-MIT](crossbeam-utils/LICENSE-MIT))
-
-
-## either
-
-- Upstream: https://github.com/rayon-rs/either
-- License: MIT ([LICENSE-MIT](either/LICENSE-MIT))
 
 
 ## errno
@@ -129,18 +69,6 @@ This software is based in part on the work of the Independent JPEG Group.
 
 - Upstream: https://github.com/rust-random/getrandom
 - License: MIT ([LICENSE-MIT](getrandom/LICENSE-MIT))
-
-
-## heck
-
-- Upstream: https://github.com/withoutboats/heck
-- License: MIT ([LICENSE-MIT](heck/LICENSE-MIT))
-
-
-## is_terminal_polyfill
-
-- Upstream: https://github.com/polyfill-rs/is_terminal_polyfill
-- License: MIT ([LICENSE-MIT](is_terminal_polyfill/LICENSE-MIT))
 
 
 ## lexical-sort
@@ -176,36 +104,6 @@ This software is based in part on the work of the Independent JPEG Group.
 - License: MIT ([LICENSE-MIT](once_cell/LICENSE-MIT))
 
 
-## once_cell_polyfill
-
-- Upstream: https://github.com/polyfill-rs/once_cell_polyfill
-- License: MIT ([LICENSE-MIT](once_cell_polyfill/LICENSE-MIT))
-
-
-## proc-macro2
-
-- Upstream: https://github.com/dtolnay/proc-macro2
-- License: MIT ([LICENSE-MIT](proc-macro2/LICENSE-MIT))
-
-
-## quote
-
-- Upstream: https://github.com/dtolnay/quote
-- License: MIT ([LICENSE-MIT](quote/LICENSE-MIT))
-
-
-## rayon
-
-- Upstream: https://github.com/rayon-rs/rayon
-- License: MIT ([LICENSE-MIT](rayon/LICENSE-MIT))
-
-
-## rayon-core
-
-- Upstream: https://github.com/rayon-rs/rayon
-- License: MIT ([LICENSE-MIT](rayon-core/LICENSE-MIT))
-
-
 ## r-efi
 
 - Upstream: https://github.com/r-efi/r-efi
@@ -230,30 +128,10 @@ This software is based in part on the work of the Independent JPEG Group.
 - License: MIT ([LICENSE-MIT](strsim/LICENSE-MIT))
 
 
-## syn
-
-- Upstream: https://github.com/dtolnay/syn
-- License: MIT ([LICENSE-MIT](syn/LICENSE-MIT))
-
-
 ## tempfile
 
 - Upstream: https://github.com/Stebalien/tempfile
 - License: MIT ([LICENSE-MIT](tempfile/LICENSE-MIT))
-
-
-## unicode-ident
-
-- Upstream: https://github.com/dtolnay/unicode-ident
-- License: MIT AND Unicode-3.0
-    - [LICENSE-MIT](unicode-ident/LICENSE-MIT)
-    - [LICENSE-UNICODE](unicode-ident/LICENSE-UNICODE)
-
-
-## utf8parse
-
-- Upstream: https://github.com/alacritty/vte
-- License: MIT ([LICENSE-MIT](utf8parse/LICENSE-MIT))
 
 
 ## walkdir
