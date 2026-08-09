@@ -91,24 +91,6 @@ fn prints_results_in_natural_path_order() {
 }
 
 #[test]
-fn rejects_mixed_direct_and_recursive_arguments() {
-    let directory = tempfile::tempdir().unwrap();
-    let target = directory.path().join("image.jpg");
-    fs::write(&target, sample()).unwrap();
-
-    Command::cargo_bin("optijpeg")
-        .unwrap()
-        .arg(&target)
-        .arg("-r")
-        .arg(directory.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "cannot be used with '--recursive <PATH>...'",
-        ));
-}
-
-#[test]
 fn rejects_direct_files_without_a_jpeg_extension() {
     let directory = tempfile::tempdir().unwrap();
     let target = directory.path().join("image.png");

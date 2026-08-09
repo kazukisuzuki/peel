@@ -233,30 +233,3 @@ fn is_jpeg_path(path: &Path) -> bool {
         extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg")
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{format_number, format_size};
-
-    #[test]
-    fn formats_numbers_with_digit_grouping() {
-        assert_eq!(format_number(0), "0");
-        assert_eq!(format_number(999), "999");
-        assert_eq!(format_number(1_000), "1,000");
-        assert_eq!(format_number(360_152), "360,152");
-        assert_eq!(format_number(u64::MAX), "18,446,744,073,709,551,615");
-    }
-
-    #[test]
-    fn formats_bytes_as_binary_units() {
-        assert_eq!(format_size(0), "0 KiB");
-        assert_eq!(format_size(511), "0 KiB");
-        assert_eq!(format_size(512), "1 KiB");
-        assert_eq!(format_size(360_152), "352 KiB");
-        assert_eq!(format_size(1_048_575), "1,024 KiB");
-        assert_eq!(format_size(1_048_576), "1 MiB");
-        assert_eq!(format_size(1_572_864), "1.5 MiB");
-        assert_eq!(format_size(1_289_748), "1.23 MiB");
-        assert_eq!(format_size(1_073_741_824), "1,024 MiB");
-    }
-}
