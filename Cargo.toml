@@ -1,25 +1,25 @@
 [package]
 name = "optijpeg"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "A cross-platform, lossless JPEG optimizer that strips metadata"
 license = "MIT"
 publish = false
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.5", features = ["derive"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
 libc = "0.2"
-lexical-sort = "0.3.1"
-mozjpeg-sys = { version = "2.2.3", default-features = false, features = ["unwinding"] }
-rayon = "1.12.0"
-tempfile = "3.20"
-walkdir = "2.5"
+lexical-sort = "0.3"
+mozjpeg-sys = { version = "2", default-features = false, features = ["unwinding"] }
+rayon = "1"
+tempfile = "3"
+walkdir = "2"
 
 [dev-dependencies]
-assert_cmd = "2.0"
+assert_cmd = "2"
 jpeg-decoder = "0.3"
-predicates = "3.1"
+predicates = "3"
 
 [profile.release]
 codegen-units = 1
