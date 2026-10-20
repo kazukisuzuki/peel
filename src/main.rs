@@ -1,22 +1,14 @@
-use std::collections::HashSet;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use clap::{Arg, ArgAction, Command, value_parser};
-use lexical_sort::{PathSort, natural_lexical_cmp};
-use optijpeg::{Optimization, Status, optimize_file};
-use walkdir::WalkDir;
-
-#[derive(Debug)]
-struct Cli {
-    files: Vec<PathBuf>,
-    recursive: Vec<PathBuf>,
-}
+use peel::discovery;
+use peel::{Optimization, Status, optimize_file};
 
 #[derive(Default)]
 struct Summary {
@@ -27,9 +19,9 @@ struct Summary {
 }
 
 fn main() -> ExitCode {
-    let cli = parse_cli();
-    let (files, discovery_errors) = discover_files(&cli.files, &cli.recursive);
-    let summary = Summary {
+    let patterns = parse_cli();
+    let (files, discovery_errors) = discovery::discover(&patterns);
+    let mut summary = Summary {
         failed: discovery_errors.len(),
         ..Summary::default()
     };
@@ -38,10 +30,7 @@ fn main() -> ExitCode {
         eprintln!("[ERROR] {error:#}");
     }
 
-    let results = optimize_files(files);
-
-    let mut summary = summary;
-    for (path, result) in results {
+    for (path, result) in optimize_files(files) {
         match result {
             Ok(result) => match result.status {
                 Status::Optimized => {
@@ -49,29 +38,40 @@ fn main() -> ExitCode {
                     summary.bytes_saved += result.bytes_saved();
                     let original_size = format_size(result.original_size);
                     let final_size = format_size(result.final_size);
+                    let changes = result
+                        .changes
+                        .iter()
+                        .map(|change| change.label())
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     if result.final_size <= result.original_size {
-                        let percent =
-                            result.bytes_saved() as f64 * 100.0 / result.original_size as f64;
                         println!(
-                            "[OK] {}: {} -> {} ({percent:.2}% saved, progressive)",
+                            "[OK] {}: {} -> {} ({}, {})",
                             path.display(),
                             original_size,
                             final_size,
+                            result.format,
+                            changes,
                         );
                     } else {
                         let size_larger = format_size(result.final_size - result.original_size);
                         println!(
-                            "[OK] {}: {} -> {} ({} larger, metadata removed, progressive)",
+                            "[OK] {}: {} -> {} ({} larger, {}, {})",
                             path.display(),
                             original_size,
                             final_size,
                             size_larger,
+                            result.format,
+                            changes,
                         );
                     }
                 }
                 Status::Unchanged => {
                     summary.unchanged += 1;
-                    println!("[SKIP] {}: already optimal", path.display());
+                    println!(
+                        "[SKIP] {}: no smaller lossless representation",
+                        path.display()
+                    );
                 }
             },
             Err(error) => {
@@ -96,42 +96,26 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_cli() -> Cli {
+fn parse_cli() -> Vec<OsString> {
     let mut matches = Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
-        .about("Optimize JPEG files losslessly in place")
+        .bin_name("peel")
+        .about("Optimizes JPEG and PNG images losslessly in place")
         .arg(
-            Arg::new("files")
-                .value_name("JPEG")
-                .help("JPEG files to optimize in place")
-                .value_parser(value_parser!(PathBuf))
+            Arg::new("patterns")
+                .value_name("PATTERN")
+                .help("File path or glob pattern (*.jpg, **/*.png, and similar)")
+                .value_parser(value_parser!(OsString))
                 .num_args(1..)
                 .action(ArgAction::Append)
-                .required_unless_present("recursive")
-                .conflicts_with("recursive"),
-        )
-        .arg(
-            Arg::new("recursive")
-                .short('r')
-                .long("recursive")
-                .value_name("PATH")
-                .help("Recursively optimize JPEG files below one or more paths")
-                .value_parser(value_parser!(PathBuf))
-                .num_args(1..)
-                .action(ArgAction::Append),
+                .required(true),
         )
         .get_matches();
 
-    Cli {
-        files: matches
-            .remove_many("files")
-            .map(Iterator::collect)
-            .unwrap_or_default(),
-        recursive: matches
-            .remove_many("recursive")
-            .map(Iterator::collect)
-            .unwrap_or_default(),
-    }
+    matches
+        .remove_many("patterns")
+        .expect("patterns are required by clap")
+        .collect()
 }
 
 fn optimize_files(files: Vec<PathBuf>) -> Vec<(PathBuf, Result<Optimization>)> {
@@ -211,79 +195,4 @@ fn format_size(bytes: u64) -> String {
         value if value.is_multiple_of(10) => format!("{mebibytes}.{} MiB", value / 10),
         value => format!("{mebibytes}.{value:02} MiB"),
     }
-}
-
-fn discover_files(direct: &[PathBuf], recursive: &[PathBuf]) -> (Vec<PathBuf>, Vec<anyhow::Error>) {
-    let mut files = Vec::new();
-    let mut errors = Vec::new();
-    let mut seen = HashSet::new();
-
-    for path in direct {
-        match validate_direct_file(path) {
-            Ok(path) => push_unique(path, &mut files, &mut seen),
-            Err(error) => errors.push(error),
-        }
-    }
-
-    for root in recursive {
-        if !root.is_dir() {
-            errors.push(anyhow::anyhow!(
-                "recursive path is not a directory: {}",
-                root.display()
-            ));
-            continue;
-        }
-
-        for entry in WalkDir::new(root).follow_links(false).sort_by_file_name() {
-            match entry {
-                Ok(entry) if entry.file_type().is_file() && is_jpeg_path(entry.path()) => {
-                    push_unique(entry.into_path(), &mut files, &mut seen);
-                }
-                Ok(_) => {}
-                Err(error) => errors.push(error.into()),
-            }
-        }
-    }
-
-    files.path_sort(natural_lexical_cmp);
-    (files, errors)
-}
-
-fn validate_direct_file(path: &Path) -> Result<PathBuf> {
-    let metadata = fs::symlink_metadata(path)
-        .with_context(|| format!("failed to inspect {}", path.display()))?;
-
-    if metadata.file_type().is_symlink() {
-        bail!("symbolic links are not supported: {}", path.display());
-    }
-    if metadata.is_dir() {
-        bail!(
-            "{} is a directory; use -r {} for recursive processing",
-            path.display(),
-            path.display()
-        );
-    }
-    if !metadata.is_file() {
-        bail!("not a regular file: {}", path.display());
-    }
-    if !is_jpeg_path(path) {
-        bail!(
-            "file must have a .jpg or .jpeg extension: {}",
-            path.display()
-        );
-    }
-    Ok(path.to_path_buf())
-}
-
-fn push_unique(path: PathBuf, files: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) {
-    let identity = path.canonicalize().unwrap_or_else(|_| path.clone());
-    if seen.insert(identity) {
-        files.push(path);
-    }
-}
-
-fn is_jpeg_path(path: &Path) -> bool {
-    path.extension().is_some_and(|extension| {
-        extension.eq_ignore_ascii_case("jpg") || extension.eq_ignore_ascii_case("jpeg")
-    })
 }
