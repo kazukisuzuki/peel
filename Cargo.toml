@@ -1,6 +1,6 @@
 [package]
 name = "peel"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.89"
 description = "A lossless optimizer for JPEG and PNG images"
@@ -15,11 +15,11 @@ libc = "0.2"
 lexical-sort = "0.3"
 mozjpeg-sys = { version = "2", default-features = false, features = ["unwinding"] }
 oxipng = { version = "10.2", default-features = false }
+png = "0.18"
 tempfile = "3"
 
 [dev-dependencies]
 jpeg-decoder = { version = "0.3", default-features = false }
-png = "0.18"
 
 [profile.release]
 codegen-units = 1
