@@ -2,14 +2,19 @@ use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 
 use anyhow::{Context, Result, anyhow, bail};
-use oxipng::internal_tests::{PngData, PngImage};
-use oxipng::{BitDepth, ColorType, Options, RGB16, RawImage, StripChunks};
+use oxipng::{
+    BitDepth as EncodedBitDepth, ColorType as EncodedColorType, Options, RGB16, RGBA8, RawImage,
+    StripChunks,
+};
 use png::{
     BitDepth as DecodedBitDepth, ColorType as DecodedColorType, Decoder, FrameControl, Limits,
     OutputInfo, Transformations,
 };
 
 use super::{Candidate, Change, FormatOutcome};
+use raster::{RasterColorType, RasterImage, decode_static_raster};
+
+mod raster;
 
 const SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 const MAX_DECOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
@@ -25,15 +30,15 @@ pub(super) fn optimize(input: &[u8]) -> Result<FormatOutcome> {
         .context("failed to decode source PNG for canonical verification")?;
     let preliminary = oxipng::optimize_from_memory(input, &options)
         .map_err(|error| anyhow!("PNG normalization failed: {error}"))?;
-    let decoded = PngData::from_slice(&preliminary, &options)
-        .map_err(|error| anyhow!("normalized PNG failed to decode: {error}"))?;
-    if decoded.raw.ihdr.interlaced {
+    let decoded = decode_static_raster(&preliminary, MAX_DECOMPRESSED_SIZE)
+        .context("normalized PNG failed to decode")?;
+    if decoded.interlaced {
         bail!("oxipng did not produce the requested non-interlaced PNG");
     }
-    let baseline = normalize_baseline(decoded.raw.as_ref().clone())?;
+    let baseline = normalize_baseline(decoded.image)?;
 
     let outputs = encode_candidates(&baseline, &options)?;
-    let selected = select_candidate(&source, outputs, &options)?;
+    let selected = select_candidate(&source, outputs)?;
     if selected == input {
         return Ok(FormatOutcome::Unchanged);
     }
@@ -102,14 +107,14 @@ fn apng_options() -> Options {
     options
 }
 
-fn normalize_baseline(mut image: PngImage) -> Result<PngImage> {
+fn normalize_baseline(mut image: RasterImage) -> Result<RasterImage> {
     compact_indexed_palette(&mut image)?;
     remove_unused_direct_trns(&mut image)?;
     zero_row_padding(&mut image)?;
     Ok(image)
 }
 
-fn encode_candidates(source: &PngImage, options: &Options) -> Result<Vec<Vec<u8>>> {
+fn encode_candidates(source: &RasterImage, options: &Options) -> Result<Vec<Vec<u8>>> {
     let mut outputs = Vec::with_capacity(4);
     if let Some(transparency_variant) = exact_alpha_to_trns(source)? {
         push_encoded(&mut outputs, transparency_variant, options)?;
@@ -124,15 +129,11 @@ fn encode_candidates(source: &PngImage, options: &Options) -> Result<Vec<Vec<u8>
     Ok(outputs)
 }
 
-fn select_candidate(
-    source: &DecodedImage,
-    outputs: Vec<Vec<u8>>,
-    options: &Options,
-) -> Result<Vec<u8>> {
+fn select_candidate(source: &DecodedImage, outputs: Vec<Vec<u8>>) -> Result<Vec<u8>> {
     let mut selected: Option<Vec<u8>> = None;
     let mut last_error = None;
     for output in outputs {
-        match verify_candidate(source, &output, options) {
+        match verify_candidate(source, &output) {
             Ok(()) => {
                 if selected
                     .as_ref()
@@ -154,12 +155,27 @@ fn select_candidate(
     bail!("no sanitized PNG candidate was produced")
 }
 
-fn push_encoded(outputs: &mut Vec<Vec<u8>>, image: PngImage, options: &Options) -> Result<()> {
-    let width = image.ihdr.width;
-    let height = image.ihdr.height;
-    let bit_depth = image.ihdr.bit_depth;
-    let color_type = image.ihdr.color_type;
-    let raw = RawImage::new(width, height, color_type, bit_depth, image.data)
+fn push_encoded(outputs: &mut Vec<Vec<u8>>, image: RasterImage, options: &Options) -> Result<()> {
+    let color_type = match image.color_type {
+        RasterColorType::Grayscale { transparent } => EncodedColorType::Grayscale {
+            transparent_shade: transparent,
+        },
+        RasterColorType::Rgb { transparent } => EncodedColorType::RGB {
+            transparent_color: transparent.map(|[r, g, b]| RGB16::new(r, g, b)),
+        },
+        RasterColorType::Indexed { palette } => EncodedColorType::Indexed {
+            palette: palette
+                .into_iter()
+                .map(|color| RGBA8::new(color.r, color.g, color.b, color.a))
+                .collect(),
+        },
+        RasterColorType::GrayscaleAlpha => EncodedColorType::GrayscaleAlpha,
+        RasterColorType::Rgba => EncodedColorType::RGBA,
+    };
+    let bit_depth = EncodedBitDepth::try_from(image.bit_depth)
+        .map_err(|error| anyhow!("failed to convert PNG bit depth: {error}"))?;
+    // RawImage is the public oxipng boundary for compressing Peel-owned raster data.
+    let raw = RawImage::new(image.width, image.height, color_type, bit_depth, image.data)
         .map_err(|error| anyhow!("failed to construct sanitized PNG: {error}"))?;
     let output = raw
         .create_optimized_png(options)
@@ -170,15 +186,18 @@ fn push_encoded(outputs: &mut Vec<Vec<u8>>, image: PngImage, options: &Options) 
     Ok(())
 }
 
-fn verify_candidate(source: &DecodedImage, candidate: &[u8], options: &Options) -> Result<()> {
+fn verify_candidate(source: &DecodedImage, candidate: &[u8]) -> Result<()> {
     let audit = inspect(candidate)?;
     if audit.animation.is_some() || audit.ancillary_or_trailing || audit.truecolor_palette {
         bail!("PNG output is not structurally sanitized");
     }
 
-    let decoded = PngData::from_slice(candidate, options)
-        .map_err(|error| anyhow!("optimized PNG failed to decode: {error}"))?;
-    verify_sanitized_representation(&decoded.raw, audit.saw_trns)?;
+    let decoded = decode_static_raster(candidate, MAX_DECOMPRESSED_SIZE)
+        .context("optimized PNG failed to decode")?;
+    if decoded.interlaced {
+        bail!("PNG output is still interlaced");
+    }
+    verify_sanitized_representation(&decoded.image, audit.saw_trns)?;
     let decoded_pixels = decode_canonical(candidate)
         .context("failed to decode optimized PNG for canonical verification")?;
     compare_canonical_pixels(source, &decoded_pixels)
@@ -350,8 +369,8 @@ fn validate_decoded_format(color_type: DecodedColorType, bit_depth: DecodedBitDe
     Ok(())
 }
 
-fn compact_indexed_palette(image: &mut PngImage) -> Result<()> {
-    let ColorType::Indexed { palette } = image.ihdr.color_type.clone() else {
+fn compact_indexed_palette(image: &mut RasterImage) -> Result<()> {
+    let RasterColorType::Indexed { palette } = image.color_type.clone() else {
         return Ok(());
     };
     let view = SampleView::new(image)?;
@@ -405,13 +424,13 @@ fn compact_indexed_palette(image: &mut PngImage) -> Result<()> {
             )?;
         }
     }
-    image.ihdr.color_type = ColorType::Indexed { palette: compact };
+    image.color_type = RasterColorType::Indexed { palette: compact };
     image.data = data;
     Ok(())
 }
 
-fn indexed_to_direct(image: &PngImage) -> Result<Option<PngImage>> {
-    let ColorType::Indexed { palette } = &image.ihdr.color_type else {
+fn indexed_to_direct(image: &RasterImage) -> Result<Option<RasterImage>> {
+    let RasterColorType::Indexed { palette } = &image.color_type else {
         return Ok(None);
     };
     let view = SampleView::new(image)?;
@@ -448,26 +467,22 @@ fn indexed_to_direct(image: &PngImage) -> Result<Option<PngImage>> {
     }
 
     let color_type = match (grayscale, alpha) {
-        (true, true) => ColorType::GrayscaleAlpha,
-        (true, false) => ColorType::Grayscale {
-            transparent_shade: None,
-        },
-        (false, true) => ColorType::RGBA,
-        (false, false) => ColorType::RGB {
-            transparent_color: None,
-        },
+        (true, true) => RasterColorType::GrayscaleAlpha,
+        (true, false) => RasterColorType::Grayscale { transparent: None },
+        (false, true) => RasterColorType::Rgba,
+        (false, false) => RasterColorType::Rgb { transparent: None },
     };
     let mut direct = image.clone();
-    direct.ihdr.color_type = color_type;
-    direct.ihdr.bit_depth = BitDepth::Eight;
+    direct.color_type = color_type;
+    direct.bit_depth = 8;
     direct.data = data;
     Ok(Some(direct))
 }
 
-fn exact_alpha_to_trns(image: &PngImage) -> Result<Option<PngImage>> {
-    let color_channels = match image.ihdr.color_type {
-        ColorType::GrayscaleAlpha => 1,
-        ColorType::RGBA => 3,
+fn exact_alpha_to_trns(image: &RasterImage) -> Result<Option<RasterImage>> {
+    let color_channels = match image.color_type {
+        RasterColorType::GrayscaleAlpha => 1,
+        RasterColorType::Rgba => 3,
         _ => return Ok(None),
     };
     let view = SampleView::new(image)?;
@@ -534,29 +549,29 @@ fn exact_alpha_to_trns(image: &PngImage) -> Result<Option<PngImage>> {
     }
 
     let color_type = if color_channels == 1 {
-        ColorType::Grayscale {
-            transparent_shade: Some(transparent_color[0]),
+        RasterColorType::Grayscale {
+            transparent: Some(transparent_color[0]),
         }
     } else {
-        ColorType::RGB {
-            transparent_color: Some(RGB16::new(
+        RasterColorType::Rgb {
+            transparent: Some([
                 transparent_color[0],
                 transparent_color[1],
                 transparent_color[2],
-            )),
+            ]),
         }
     };
     let mut reduced = image.clone();
-    reduced.ihdr.color_type = color_type;
+    reduced.color_type = color_type;
     reduced.data = data;
     Ok(Some(reduced))
 }
 
-fn remove_unused_direct_trns(image: &mut PngImage) -> Result<()> {
+fn remove_unused_direct_trns(image: &mut RasterImage) -> Result<()> {
     let view = SampleView::new(image)?;
-    let replacement = match image.ihdr.color_type.clone() {
-        ColorType::Grayscale {
-            transparent_shade: Some(transparent),
+    let replacement = match image.color_type.clone() {
+        RasterColorType::Grayscale {
+            transparent: Some(transparent),
         } => {
             let mut used = false;
             for y in 0..view.height {
@@ -564,29 +579,25 @@ fn remove_unused_direct_trns(image: &mut PngImage) -> Result<()> {
                     used |= view.sample(x, y, 0)? == transparent;
                 }
             }
-            (!used).then_some(ColorType::Grayscale {
-                transparent_shade: None,
-            })
+            (!used).then_some(RasterColorType::Grayscale { transparent: None })
         }
-        ColorType::RGB {
-            transparent_color: Some(transparent),
+        RasterColorType::Rgb {
+            transparent: Some(transparent),
         } => {
             let mut used = false;
             for y in 0..view.height {
                 for x in 0..view.width {
-                    used |= view.sample(x, y, 0)? == transparent.r
-                        && view.sample(x, y, 1)? == transparent.g
-                        && view.sample(x, y, 2)? == transparent.b;
+                    used |= view.sample(x, y, 0)? == transparent[0]
+                        && view.sample(x, y, 1)? == transparent[1]
+                        && view.sample(x, y, 2)? == transparent[2];
                 }
             }
-            (!used).then_some(ColorType::RGB {
-                transparent_color: None,
-            })
+            (!used).then_some(RasterColorType::Rgb { transparent: None })
         }
         _ => None,
     };
     if let Some(color_type) = replacement {
-        image.ihdr.color_type = color_type;
+        image.color_type = color_type;
     }
     Ok(())
 }
@@ -932,7 +943,7 @@ fn canonical_pixel(
 
 #[derive(Clone, Copy)]
 struct SampleView<'a> {
-    image: &'a PngImage,
+    image: &'a RasterImage,
     width: usize,
     height: usize,
     channels: usize,
@@ -941,14 +952,11 @@ struct SampleView<'a> {
 }
 
 impl<'a> SampleView<'a> {
-    fn new(image: &'a PngImage) -> Result<Self> {
-        if image.ihdr.interlaced {
-            bail!("canonical PNG iteration requires non-interlaced samples");
-        }
-        let width = image.ihdr.width as usize;
-        let height = image.ihdr.height as usize;
-        let channels = channels(&image.ihdr.color_type);
-        let depth = image.ihdr.bit_depth as u8;
+    fn new(image: &'a RasterImage) -> Result<Self> {
+        let width = image.width as usize;
+        let height = image.height as usize;
+        let channels = channels(&image.color_type);
+        let depth = image.bit_depth;
         let bits_per_row = width
             .checked_mul(channels)
             .and_then(|samples| samples.checked_mul(usize::from(depth)))
@@ -1014,17 +1022,14 @@ fn compare_canonical_pixels(before: &DecodedImage, after: &DecodedImage) -> Resu
     Ok(())
 }
 
-fn verify_sanitized_representation(image: &PngImage, saw_trns: bool) -> Result<()> {
-    if image.ihdr.interlaced {
-        bail!("PNG output is still interlaced");
-    }
+fn verify_sanitized_representation(image: &RasterImage, saw_trns: bool) -> Result<()> {
     if has_nonzero_row_padding(image)? {
         bail!("PNG output contains non-zero row padding bits");
     }
 
     let view = SampleView::new(image)?;
-    match &image.ihdr.color_type {
-        ColorType::Indexed { palette } => {
+    match &image.color_type {
+        RasterColorType::Indexed { palette } => {
             let mut used = vec![false; palette.len()];
             for y in 0..view.height {
                 for x in 0..view.width {
@@ -1050,8 +1055,8 @@ fn verify_sanitized_representation(image: &PngImage, saw_trns: bool) -> Result<(
                 bail!("PNG output contains an ineffective or missing indexed tRNS chunk");
             }
         }
-        ColorType::Grayscale { transparent_shade } => {
-            if let Some(transparent) = transparent_shade {
+        RasterColorType::Grayscale { transparent } => {
+            if let Some(transparent) = transparent {
                 let used = any_pixel(
                     image,
                     |view, x, y| Ok(view.sample(x, y, 0)? == *transparent),
@@ -1060,26 +1065,26 @@ fn verify_sanitized_representation(image: &PngImage, saw_trns: bool) -> Result<(
                     bail!("PNG output contains an unused grayscale tRNS value");
                 }
             }
-            if saw_trns != transparent_shade.is_some() {
+            if saw_trns != transparent.is_some() {
                 bail!("PNG output contains an ineffective or missing grayscale tRNS chunk");
             }
         }
-        ColorType::RGB { transparent_color } => {
-            if let Some(transparent) = transparent_color {
+        RasterColorType::Rgb { transparent } => {
+            if let Some(transparent) = transparent {
                 let used = any_pixel(image, |view, x, y| {
-                    Ok(view.sample(x, y, 0)? == transparent.r
-                        && view.sample(x, y, 1)? == transparent.g
-                        && view.sample(x, y, 2)? == transparent.b)
+                    Ok(view.sample(x, y, 0)? == transparent[0]
+                        && view.sample(x, y, 1)? == transparent[1]
+                        && view.sample(x, y, 2)? == transparent[2])
                 })?;
                 if !used {
                     bail!("PNG output contains an unused RGB tRNS value");
                 }
             }
-            if saw_trns != transparent_color.is_some() {
+            if saw_trns != transparent.is_some() {
                 bail!("PNG output contains an ineffective or missing RGB tRNS chunk");
             }
         }
-        ColorType::GrayscaleAlpha | ColorType::RGBA => {
+        RasterColorType::GrayscaleAlpha | RasterColorType::Rgba => {
             if saw_trns {
                 bail!("PNG output has tRNS in a color type with an alpha channel");
             }
@@ -1089,7 +1094,7 @@ fn verify_sanitized_representation(image: &PngImage, saw_trns: bool) -> Result<(
 }
 
 fn any_pixel(
-    image: &PngImage,
+    image: &RasterImage,
     mut predicate: impl FnMut(SampleView<'_>, usize, usize) -> Result<bool>,
 ) -> Result<bool> {
     let view = SampleView::new(image)?;
@@ -1103,7 +1108,7 @@ fn any_pixel(
     Ok(false)
 }
 
-fn has_nonzero_row_padding(image: &PngImage) -> Result<bool> {
+fn has_nonzero_row_padding(image: &RasterImage) -> Result<bool> {
     let view = SampleView::new(image)?;
     let used_bits = view.width * view.channels * usize::from(view.depth);
     let padding_bits = (8 - used_bits % 8) % 8;
@@ -1114,7 +1119,7 @@ fn has_nonzero_row_padding(image: &PngImage) -> Result<bool> {
     Ok((0..view.height).any(|row| image.data[(row + 1) * view.row_bytes - 1] & mask != 0))
 }
 
-fn zero_row_padding(image: &mut PngImage) -> Result<()> {
+fn zero_row_padding(image: &mut RasterImage) -> Result<()> {
     let view = SampleView::new(image)?;
     let used_bits = view.width * view.channels * usize::from(view.depth);
     let padding_bits = (8 - used_bits % 8) % 8;
@@ -1158,12 +1163,12 @@ fn write_packed_sample(
     Ok(())
 }
 
-fn channels(color_type: &ColorType) -> usize {
+fn channels(color_type: &RasterColorType) -> usize {
     match color_type {
-        ColorType::Grayscale { .. } | ColorType::Indexed { .. } => 1,
-        ColorType::GrayscaleAlpha => 2,
-        ColorType::RGB { .. } => 3,
-        ColorType::RGBA => 4,
+        RasterColorType::Grayscale { .. } | RasterColorType::Indexed { .. } => 1,
+        RasterColorType::GrayscaleAlpha => 2,
+        RasterColorType::Rgb { .. } => 3,
+        RasterColorType::Rgba => 4,
     }
 }
 

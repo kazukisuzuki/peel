@@ -59,6 +59,16 @@ fn decode_png(bytes: &[u8]) -> Vec<u8> {
     output
 }
 
+fn decode_png_identity(bytes: &[u8]) -> (png::OutputInfo, Vec<u8>) {
+    let mut decoder = png::Decoder::new(Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::IDENTITY);
+    let mut reader = decoder.read_info().unwrap();
+    let mut output = vec![0; reader.output_buffer_size().unwrap()];
+    let info = reader.next_frame(&mut output).unwrap();
+    output.truncate(info.buffer_size());
+    (info, output)
+}
+
 fn decode_png_canonical(bytes: &[u8]) -> Vec<[u16; 4]> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND);
@@ -805,9 +815,8 @@ fn clears_non_pixel_bits_at_the_end_of_sub_byte_rows() {
     info.color_type = png::ColorType::Grayscale;
     info.bit_depth = png::BitDepth::One;
     let input = encode_png(info, &[0xff]);
-    let input_data =
-        oxipng::internal_tests::PngData::from_slice(&input, &oxipng::Options::default()).unwrap();
-    assert_ne!(input_data.raw.data[0] & 0x7f, 0);
+    let (_, input_data) = decode_png_identity(&input);
+    assert_ne!(input_data[0] & 0x7f, 0);
     let expected = decode_png_canonical(&input);
     fs::write(&target, input).unwrap();
 
@@ -815,12 +824,22 @@ fn clears_non_pixel_bits_at_the_end_of_sub_byte_rows() {
     assert_success(&output);
     let optimized = fs::read(&target).unwrap();
     assert_eq!(decode_png_canonical(&optimized), expected);
-    let decoded =
-        oxipng::internal_tests::PngData::from_slice(&optimized, &oxipng::Options::default())
-            .unwrap();
-    let depth = decoded.raw.ihdr.bit_depth as u8;
+    let (info, decoded) = decode_png_identity(&optimized);
+    let depth = info.bit_depth as u8;
     if depth < 8 {
-        let padding_mask = (1u8 << (8 - depth)) - 1;
-        assert_eq!(decoded.raw.data[0] & padding_mask, 0);
+        let channels = match info.color_type {
+            png::ColorType::Grayscale | png::ColorType::Indexed => 1,
+            png::ColorType::GrayscaleAlpha => 2,
+            png::ColorType::Rgb => 3,
+            png::ColorType::Rgba => 4,
+        };
+        let used_bits = info.width as usize * channels * usize::from(depth);
+        let padding_bits = (8 - used_bits % 8) % 8;
+        if padding_bits != 0 {
+            let padding_mask = (1u8 << padding_bits) - 1;
+            for row in 0..info.height as usize {
+                assert_eq!(decoded[(row + 1) * info.line_size - 1] & padding_mask, 0);
+            }
+        }
     }
 }
