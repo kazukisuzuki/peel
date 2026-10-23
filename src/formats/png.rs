@@ -5,7 +5,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use oxipng::internal_tests::{PngData, PngImage};
 use oxipng::{BitDepth, ColorType, Options, RGB16, RawImage, StripChunks};
 use png::{
-    BitDepth as DecodedBitDepth, ColorType as DecodedColorType, Decoder, Limits, Transformations,
+    BitDepth as DecodedBitDepth, ColorType as DecodedColorType, Decoder, FrameControl, Limits,
+    OutputInfo, Transformations,
 };
 
 use super::{Candidate, Change, FormatOutcome};
@@ -15,8 +16,8 @@ const MAX_DECOMPRESSED_SIZE: usize = 512 * 1024 * 1024;
 
 pub(super) fn optimize(input: &[u8]) -> Result<FormatOutcome> {
     let audit = inspect(input)?;
-    if audit.apng {
-        bail!("UnsupportedApngWithStripAll: APNG cannot be optimized without removing animation");
+    if audit.animation.is_some() {
+        return optimize_apng(input, audit.metadata_cleanup_required());
     }
 
     let options = options();
@@ -48,6 +49,25 @@ pub(super) fn optimize(input: &[u8]) -> Result<FormatOutcome> {
     }))
 }
 
+fn optimize_apng(input: &[u8], cleanup_required: bool) -> Result<FormatOutcome> {
+    let output = oxipng::optimize_from_memory(input, &apng_options())
+        .map_err(|error| anyhow!("APNG normalization failed: {error}"))?;
+    verify_apng_candidate(input, &output)?;
+
+    if output == input || (!cleanup_required && output.len() >= input.len()) {
+        return Ok(FormatOutcome::Unchanged);
+    }
+
+    let mut changes = vec![Change::Recompressed, Change::ContainerNormalized];
+    if cleanup_required {
+        changes.push(Change::MetadataRemoved);
+    }
+    Ok(FormatOutcome::Candidate(Candidate {
+        bytes: output,
+        changes,
+    }))
+}
+
 fn options() -> Options {
     let mut options = Options::from_preset(2);
     options.interlace = Some(false);
@@ -61,6 +81,23 @@ fn options() -> Options {
     options.fix_errors = false;
     options.force = true;
     options.strip = StripChunks::All;
+    options.max_decompressed_size = Some(MAX_DECOMPRESSED_SIZE);
+    options
+}
+
+fn apng_options() -> Options {
+    let mut options = Options::from_preset(2);
+    options.strip = StripChunks::Keep(oxipng::indexset![*b"acTL", *b"fcTL", *b"fdAT"]);
+    options.interlace = None;
+    options.bit_depth_reduction = false;
+    options.color_type_reduction = false;
+    options.palette_reduction = false;
+    options.grayscale_reduction = false;
+    options.scale_16 = false;
+    options.optimize_alpha = false;
+    options.idat_recoding = true;
+    options.fix_errors = false;
+    options.force = true;
     options.max_decompressed_size = Some(MAX_DECOMPRESSED_SIZE);
     options
 }
@@ -135,7 +172,7 @@ fn push_encoded(outputs: &mut Vec<Vec<u8>>, image: PngImage, options: &Options) 
 
 fn verify_candidate(source: &DecodedImage, candidate: &[u8], options: &Options) -> Result<()> {
     let audit = inspect(candidate)?;
-    if audit.apng || audit.ancillary_or_trailing || audit.truecolor_palette {
+    if audit.animation.is_some() || audit.ancillary_or_trailing || audit.truecolor_palette {
         bail!("PNG output is not structurally sanitized");
     }
 
@@ -145,6 +182,172 @@ fn verify_candidate(source: &DecodedImage, candidate: &[u8], options: &Options) 
     let decoded_pixels = decode_canonical(candidate)
         .context("failed to decode optimized PNG for canonical verification")?;
     compare_canonical_pixels(source, &decoded_pixels)
+}
+
+fn canonical_decoder(input: &[u8]) -> Decoder<Cursor<&[u8]>> {
+    let mut decoder = Decoder::new_with_limits(
+        Cursor::new(input),
+        Limits {
+            bytes: MAX_DECOMPRESSED_SIZE,
+        },
+    );
+    decoder.set_transformations(Transformations::EXPAND);
+    decoder
+}
+
+fn checked_output_buffer_size(size: Option<usize>) -> Result<usize> {
+    size.filter(|size| *size <= MAX_DECOMPRESSED_SIZE)
+        .ok_or_else(|| anyhow!("decoded PNG exceeds the decompressed size limit"))
+}
+
+fn verify_apng_candidate(source: &[u8], candidate: &[u8]) -> Result<()> {
+    let candidate_audit = inspect(candidate)?;
+    if candidate_audit.animation.is_none() {
+        bail!("optimized output is not an APNG");
+    }
+    if candidate_audit.metadata_cleanup_required() {
+        bail!("APNG output is not structurally sanitized");
+    }
+
+    let mut source_reader = canonical_decoder(source)
+        .read_info()
+        .map_err(|error| anyhow!("source APNG decode failed: {error}"))?;
+    let mut candidate_reader = canonical_decoder(candidate)
+        .read_info()
+        .map_err(|error| anyhow!("optimized APNG decode failed: {error}"))?;
+
+    let source_info = source_reader.info();
+    let candidate_info = candidate_reader.info();
+    if source_info.width != candidate_info.width || source_info.height != candidate_info.height {
+        bail!("APNG canvas dimensions changed during sanitation");
+    }
+    let source_control = source_info
+        .animation_control
+        .ok_or_else(|| anyhow!("source APNG decoder found no animation control"))?;
+    let candidate_control = candidate_info
+        .animation_control
+        .ok_or_else(|| anyhow!("optimized APNG decoder found no animation control"))?;
+    if source_control.num_frames != candidate_control.num_frames
+        || source_control.num_plays != candidate_control.num_plays
+    {
+        bail!("APNG loop or frame count changed during sanitation");
+    }
+    let default_image_in_animation = source_info.frame_control.is_some();
+    if default_image_in_animation != candidate_info.frame_control.is_some() {
+        bail!("APNG default-image relationship changed during sanitation");
+    }
+
+    let source_buffer_size = checked_output_buffer_size(source_reader.output_buffer_size())
+        .context("source APNG frame")?;
+    let candidate_buffer_size = checked_output_buffer_size(candidate_reader.output_buffer_size())
+        .context("optimized APNG frame")?;
+    let mut source_buffer = vec![0; source_buffer_size];
+    let mut candidate_buffer = vec![0; candidate_buffer_size];
+    let image_count = source_control
+        .num_frames
+        .checked_add(u32::from(!default_image_in_animation))
+        .ok_or_else(|| anyhow!("APNG image count overflow"))?;
+
+    for frame_index in 0..image_count {
+        let source_output = source_reader
+            .next_frame(&mut source_buffer)
+            .map_err(|error| anyhow!("source APNG frame {frame_index} decode failed: {error}"))?;
+        let candidate_output =
+            candidate_reader
+                .next_frame(&mut candidate_buffer)
+                .map_err(|error| {
+                    anyhow!("optimized APNG frame {frame_index} decode failed: {error}")
+                })?;
+        compare_frame_control(
+            frame_index,
+            source_reader.info().frame_control.as_ref(),
+            candidate_reader.info().frame_control.as_ref(),
+        )?;
+        compare_decoded_frames(
+            frame_index,
+            source_output,
+            &source_buffer,
+            candidate_output,
+            &candidate_buffer,
+        )?;
+    }
+
+    if source_reader.next_frame(&mut source_buffer).is_ok()
+        || candidate_reader.next_frame(&mut candidate_buffer).is_ok()
+    {
+        bail!("APNG contains more images than declared");
+    }
+    Ok(())
+}
+
+fn compare_frame_control(
+    frame_index: u32,
+    before: Option<&FrameControl>,
+    after: Option<&FrameControl>,
+) -> Result<()> {
+    let same = match (before, after) {
+        (None, None) => true,
+        (Some(before), Some(after)) => {
+            before.width == after.width
+                && before.height == after.height
+                && before.x_offset == after.x_offset
+                && before.y_offset == after.y_offset
+                && before.delay_num == after.delay_num
+                && before.delay_den == after.delay_den
+                && before.dispose_op == after.dispose_op
+                && before.blend_op == after.blend_op
+        }
+        _ => false,
+    };
+    if !same {
+        bail!("APNG frame {frame_index} control changed during sanitation");
+    }
+    Ok(())
+}
+
+fn compare_decoded_frames(
+    frame_index: u32,
+    before_info: OutputInfo,
+    before_data: &[u8],
+    after_info: OutputInfo,
+    after_data: &[u8],
+) -> Result<()> {
+    if before_info.width != after_info.width || before_info.height != after_info.height {
+        bail!("APNG frame {frame_index} dimensions changed during sanitation");
+    }
+    validate_decoded_format(before_info.color_type, before_info.bit_depth)?;
+    validate_decoded_format(after_info.color_type, after_info.bit_depth)?;
+
+    let width = before_info.width as usize;
+    let height = before_info.height as usize;
+    let pixel_count = width
+        .checked_mul(height)
+        .ok_or_else(|| anyhow!("APNG frame {frame_index} dimensions overflow"))?;
+    for pixel_index in 0..pixel_count {
+        let x = pixel_index % width;
+        let y = pixel_index / width;
+        let before = canonical_output_pixel(&before_info, before_data, x, y);
+        let after = canonical_output_pixel(&after_info, after_data, x, y);
+        if before != after {
+            bail!(
+                "APNG frame {frame_index} canonical pixel {pixel_index} changed during sanitation"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn canonical_output_pixel(info: &OutputInfo, data: &[u8], x: usize, y: usize) -> CanonicalPixel {
+    canonical_pixel(info.color_type, info.bit_depth, info.line_size, data, x, y)
+}
+
+fn validate_decoded_format(color_type: DecodedColorType, bit_depth: DecodedBitDepth) -> Result<()> {
+    if matches!(color_type, DecodedColorType::Indexed)
+        || !matches!(bit_depth, DecodedBitDepth::Eight | DecodedBitDepth::Sixteen)
+    {
+        bail!("PNG expansion did not produce 8-bit or 16-bit direct-color samples");
+    }
+    Ok(())
 }
 
 fn compact_indexed_palette(image: &mut PngImage) -> Result<()> {
@@ -388,10 +591,21 @@ fn remove_unused_direct_trns(image: &mut PngImage) -> Result<()> {
     Ok(())
 }
 
+struct AnimationAudit {
+    num_frames: u32,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum FrameData {
+    Missing,
+    Idat,
+    Fdat,
+}
+
 #[derive(Default)]
 struct PngAudit {
     ancillary_or_trailing: bool,
-    apng: bool,
+    animation: Option<AnimationAudit>,
     truecolor_palette: bool,
     saw_trns: bool,
 }
@@ -410,7 +624,13 @@ fn inspect(input: &[u8]) -> Result<PngAudit> {
     let mut position = SIGNATURE.len();
     let mut audit = PngAudit::default();
     let mut saw_ihdr = false;
+    let mut canvas = None;
     let mut color_type = None;
+    let mut saw_idat = false;
+    let mut idat_ended = false;
+    let mut expected_sequence = 0u64;
+    let mut frame_count = 0u32;
+    let mut current_frame_data = None;
 
     while position < input.len() {
         let header = input
@@ -442,6 +662,12 @@ fn inspect(input: &[u8]) -> Result<PngAudit> {
                 bail!("invalid or duplicate PNG IHDR");
             }
             saw_ihdr = true;
+            let width = u32::from_be_bytes(data[0..4].try_into().unwrap());
+            let height = u32::from_be_bytes(data[4..8].try_into().unwrap());
+            if width == 0 || height == 0 {
+                bail!("PNG canvas dimensions must be non-zero");
+            }
+            canvas = Some((width, height));
             color_type = Some(data[9]);
         } else if kind == *b"PLTE" && matches!(color_type, Some(2 | 6)) {
             audit.truecolor_palette = true;
@@ -449,12 +675,98 @@ fn inspect(input: &[u8]) -> Result<PngAudit> {
         if kind == *b"tRNS" {
             audit.saw_trns = true;
         }
-        if matches!(&kind, b"acTL" | b"fcTL" | b"fdAT") {
-            audit.apng = true;
+        if saw_idat && kind != *b"IDAT" {
+            idat_ended = true;
         }
-
+        match &kind {
+            b"acTL" => {
+                if audit.animation.is_some() || data_length != 8 || saw_idat {
+                    bail!("invalid, duplicate, or misplaced APNG acTL chunk");
+                }
+                let num_frames = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                if num_frames == 0 {
+                    bail!("APNG must declare at least one animation frame");
+                }
+                audit.animation = Some(AnimationAudit { num_frames });
+            }
+            b"fcTL" => {
+                if audit.animation.is_none() || data_length != 26 {
+                    bail!("APNG fcTL requires a preceding acTL chunk and length 26");
+                }
+                if current_frame_data == Some(FrameData::Missing) {
+                    bail!("APNG frame has no image data");
+                }
+                let sequence = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                if u64::from(sequence) != expected_sequence {
+                    bail!("APNG sequence number is not contiguous");
+                }
+                expected_sequence += 1;
+                let width = u32::from_be_bytes(data[4..8].try_into().unwrap());
+                let height = u32::from_be_bytes(data[8..12].try_into().unwrap());
+                let x_offset = u32::from_be_bytes(data[12..16].try_into().unwrap());
+                let y_offset = u32::from_be_bytes(data[16..20].try_into().unwrap());
+                let (canvas_width, canvas_height) = canvas.unwrap();
+                if width == 0
+                    || height == 0
+                    || x_offset
+                        .checked_add(width)
+                        .is_none_or(|right| right > canvas_width)
+                    || y_offset
+                        .checked_add(height)
+                        .is_none_or(|bottom| bottom > canvas_height)
+                {
+                    bail!("APNG frame rectangle is outside the canvas");
+                }
+                if data[24] > 2 || data[25] > 1 {
+                    bail!("APNG frame has an invalid dispose or blend operation");
+                }
+                if !saw_idat
+                    && (frame_count != 0
+                        || width != canvas_width
+                        || height != canvas_height
+                        || x_offset != 0
+                        || y_offset != 0)
+                {
+                    bail!("APNG default-image frame must cover the canvas");
+                }
+                frame_count = frame_count
+                    .checked_add(1)
+                    .ok_or_else(|| anyhow!("APNG frame count overflow"))?;
+                current_frame_data = Some(FrameData::Missing);
+            }
+            b"IDAT" => {
+                if idat_ended {
+                    bail!("PNG IDAT chunks must be consecutive");
+                }
+                saw_idat = true;
+                match current_frame_data {
+                    Some(FrameData::Missing | FrameData::Idat) => {
+                        current_frame_data = Some(FrameData::Idat);
+                    }
+                    Some(FrameData::Fdat) => bail!("APNG frame mixes IDAT and fdAT image data"),
+                    None => {}
+                }
+            }
+            b"fdAT" => {
+                if audit.animation.is_none() || !saw_idat || data_length < 4 {
+                    bail!("invalid or misplaced APNG fdAT chunk");
+                }
+                match current_frame_data {
+                    Some(FrameData::Missing | FrameData::Fdat) => {}
+                    Some(FrameData::Idat) => bail!("APNG frame mixes IDAT and fdAT image data"),
+                    None => bail!("APNG fdAT chunk has no corresponding frame control"),
+                }
+                let sequence = u32::from_be_bytes(data[0..4].try_into().unwrap());
+                if u64::from(sequence) != expected_sequence {
+                    bail!("APNG sequence number is not contiguous");
+                }
+                expected_sequence += 1;
+                current_frame_data = Some(FrameData::Fdat);
+            }
+            _ => {}
+        }
         let ancillary = kind[0] & 0x20 != 0;
-        if ancillary && kind != *b"tRNS" {
+        if ancillary && !matches!(&kind, b"tRNS" | b"acTL" | b"fcTL" | b"fdAT") {
             audit.ancillary_or_trailing = true;
         } else if !ancillary && !matches!(&kind, b"IHDR" | b"PLTE" | b"IDAT" | b"IEND") {
             bail!(
@@ -467,6 +779,17 @@ fn inspect(input: &[u8]) -> Result<PngAudit> {
         if kind == *b"IEND" {
             if data_length != 0 {
                 bail!("PNG IEND must be empty");
+            }
+            if !saw_idat {
+                bail!("PNG is missing IDAT");
+            }
+            if current_frame_data == Some(FrameData::Missing) {
+                bail!("APNG frame has no image data");
+            }
+            if let Some(animation) = &audit.animation
+                && frame_count != animation.num_frames
+            {
+                bail!("APNG acTL frame count does not match fcTL chunks");
             }
             audit.ancillary_or_trailing |= position != input.len();
             return Ok(audit);
@@ -494,34 +817,18 @@ struct DecodedImage {
 }
 
 fn decode_canonical(input: &[u8]) -> Result<DecodedImage> {
-    let mut decoder = Decoder::new_with_limits(
-        Cursor::new(input),
-        Limits {
-            bytes: MAX_DECOMPRESSED_SIZE,
-        },
-    );
-    decoder.set_transformations(Transformations::EXPAND);
-    let mut reader = decoder
+    let mut reader = canonical_decoder(input)
         .read_info()
         .map_err(|error| anyhow!("PNG decode failed: {error}"))?;
-    let buffer_size = reader
-        .output_buffer_size()
-        .filter(|size| *size <= MAX_DECOMPRESSED_SIZE)
-        .ok_or_else(|| anyhow!("expanded PNG exceeds the decompressed size limit"))?;
+    let buffer_size =
+        checked_output_buffer_size(reader.output_buffer_size()).context("expanded PNG image")?;
     let mut data = vec![0; buffer_size];
     let info = reader
         .next_frame(&mut data)
         .map_err(|error| anyhow!("PNG pixel decode failed: {error}"))?;
     data.truncate(info.buffer_size());
 
-    if matches!(info.color_type, DecodedColorType::Indexed)
-        || !matches!(
-            info.bit_depth,
-            DecodedBitDepth::Eight | DecodedBitDepth::Sixteen
-        )
-    {
-        bail!("PNG expansion did not produce 8-bit or 16-bit direct-color samples");
-    }
+    validate_decoded_format(info.color_type, info.bit_depth)?;
     Ok(DecodedImage {
         width: info.width as usize,
         height: info.height as usize,
@@ -559,49 +866,67 @@ impl Iterator for CanonicalPixels<'_> {
 
 impl DecodedImage {
     fn canonical_pixel(&self, x: usize, y: usize) -> CanonicalPixel {
-        let sample = |channel| {
-            let channels = decoded_channels(self.color_type);
-            let byte_depth = decoded_byte_depth(self.bit_depth);
-            let offset = y * self.line_size + (x * channels + channel) * byte_depth;
-            if byte_depth == 1 {
-                u16::from(self.data[offset]) * 257
-            } else {
-                u16::from_be_bytes([self.data[offset], self.data[offset + 1]])
-            }
-        };
-        match self.color_type {
-            DecodedColorType::Grayscale => {
-                let gray = sample(0);
-                CanonicalPixel {
-                    r: gray,
-                    g: gray,
-                    b: gray,
-                    a: u16::MAX,
-                }
-            }
-            DecodedColorType::Rgb => CanonicalPixel {
-                r: sample(0),
-                g: sample(1),
-                b: sample(2),
-                a: u16::MAX,
-            },
-            DecodedColorType::GrayscaleAlpha => {
-                let gray = sample(0);
-                CanonicalPixel {
-                    r: gray,
-                    g: gray,
-                    b: gray,
-                    a: sample(1),
-                }
-            }
-            DecodedColorType::Rgba => CanonicalPixel {
-                r: sample(0),
-                g: sample(1),
-                b: sample(2),
-                a: sample(3),
-            },
-            DecodedColorType::Indexed => unreachable!("indexed data is expanded by the decoder"),
+        canonical_pixel(
+            self.color_type,
+            self.bit_depth,
+            self.line_size,
+            &self.data,
+            x,
+            y,
+        )
+    }
+}
+
+fn canonical_pixel(
+    color_type: DecodedColorType,
+    bit_depth: DecodedBitDepth,
+    line_size: usize,
+    data: &[u8],
+    x: usize,
+    y: usize,
+) -> CanonicalPixel {
+    let sample = |channel| {
+        let channels = decoded_channels(color_type);
+        let byte_depth = decoded_byte_depth(bit_depth);
+        let offset = y * line_size + (x * channels + channel) * byte_depth;
+        if byte_depth == 1 {
+            u16::from(data[offset]) * 257
+        } else {
+            u16::from_be_bytes([data[offset], data[offset + 1]])
         }
+    };
+    match color_type {
+        DecodedColorType::Grayscale => {
+            let gray = sample(0);
+            CanonicalPixel {
+                r: gray,
+                g: gray,
+                b: gray,
+                a: u16::MAX,
+            }
+        }
+        DecodedColorType::Rgb => CanonicalPixel {
+            r: sample(0),
+            g: sample(1),
+            b: sample(2),
+            a: u16::MAX,
+        },
+        DecodedColorType::GrayscaleAlpha => {
+            let gray = sample(0);
+            CanonicalPixel {
+                r: gray,
+                g: gray,
+                b: gray,
+                a: sample(1),
+            }
+        }
+        DecodedColorType::Rgba => CanonicalPixel {
+            r: sample(0),
+            g: sample(1),
+            b: sample(2),
+            a: sample(3),
+        },
+        DecodedColorType::Indexed => unreachable!("indexed data is expanded by the decoder"),
     }
 }
 

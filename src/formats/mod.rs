@@ -48,7 +48,7 @@ static HANDLERS: &[Handler] = &[
     },
     Handler {
         name: "PNG",
-        extensions: &["png"],
+        extensions: &["png", "apng"],
         optimize: png::optimize,
     },
 ];
@@ -67,7 +67,7 @@ pub(crate) fn optimize(path: &Path, input: &[u8]) -> Result<(&'static str, Forma
 
 pub(crate) fn unsupported_extension(path: &Path) -> anyhow::Error {
     anyhow!(
-        "unsupported file extension: {} (expected .jpg, .jpeg, or .png)",
+        "unsupported file extension: {} (expected .jpg, .jpeg, .png, or .apng)",
         path.display()
     )
 }

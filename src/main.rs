@@ -104,7 +104,7 @@ fn parse_cli() -> Vec<OsString> {
         .arg(
             Arg::new("patterns")
                 .value_name("PATTERN")
-                .help("File path or glob pattern (*.jpg, **/*.png, and similar)")
+                .help("File path or glob pattern (*.jpg, **/*.png, **/*.apng, and similar)")
                 .value_parser(value_parser!(OsString))
                 .num_args(1..)
                 .action(ArgAction::Append)

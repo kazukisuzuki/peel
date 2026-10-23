@@ -2,7 +2,7 @@
 
 Optimizes JPEG and PNG images losslessly in place.
 
-It removes metadata and trailing data. This includes EXIF and color profiles. Files are left unchanged if optimization fails. APNG is not supported
+It removes metadata and trailing data. This includes EXIF and color profiles. Files are left unchanged if optimization fails.
 
 
 ## Build
@@ -33,8 +33,8 @@ cargo uninstall peel
 ## Usage
 
 ~~~sh
-peel image.jpg image.png
-peel "images/**/*.jpg" "images/**/*.jpeg" "images/**/*.png"
+peel image.jpg image.png animation.apng
+peel "images/**/*.jpg" "images/**/*.jpeg" "images/**/*.png" "images/**/*.apng"
 ~~~
 
 Quote glob patterns for consistent behavior across shells.
