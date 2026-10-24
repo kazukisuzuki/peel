@@ -5,6 +5,15 @@ This directory lists license information and license texts for third-party compo
 This software is based in part on the work of the Independent JPEG Group. Bundled native libdeflate and mozjpeg/libjpeg license texts are included with their Rust wrapper entries.
 
 
+## adler2 2.0.1
+
+- Upstream: https://github.com/oyvindln/adler2
+- License: 0BSD OR MIT OR Apache-2.0
+    - [LICENSE-0BSD](adler2/LICENSE-0BSD)
+    - [LICENSE-APACHE](adler2/LICENSE-APACHE)
+    - [LICENSE-MIT](adler2/LICENSE-MIT)
+
+
 ## anstyle 1.0.14
 
 - Upstream: https://github.com/rust-cli/anstyle.git
@@ -26,6 +35,14 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
 - License: MIT OR Apache-2.0
     - [LICENSE-APACHE](anyhow/LICENSE-APACHE)
     - [LICENSE-MIT](anyhow/LICENSE-MIT)
+
+
+## bitflags 2.13.2
+
+- Upstream: https://github.com/bitflags/bitflags
+- License: MIT OR Apache-2.0
+    - [LICENSE-APACHE](bitflags/LICENSE-APACHE)
+    - [LICENSE-MIT](bitflags/LICENSE-MIT)
 
 
 
@@ -70,6 +87,14 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](clap_lex/LICENSE-MIT)
 
 
+## crc32fast 1.5.3
+
+- Upstream: https://github.com/srijs/rust-crc32fast
+- License: MIT OR Apache-2.0
+    - [LICENSE-APACHE](crc32fast/LICENSE-APACHE)
+    - [LICENSE-MIT](crc32fast/LICENSE-MIT)
+
+
 ## equivalent 1.0.3
 
 - Upstream: https://github.com/indexmap-rs/equivalent
@@ -92,6 +117,22 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
 - License: Apache-2.0 OR MIT
     - [LICENSE-APACHE](fastrand/LICENSE-APACHE)
     - [LICENSE-MIT](fastrand/LICENSE-MIT)
+
+
+## fdeflate 0.3.7
+
+- Upstream: https://github.com/image-rs/fdeflate
+- License: MIT OR Apache-2.0
+    - [LICENSE-APACHE](fdeflate/LICENSE-APACHE)
+    - [LICENSE-MIT](fdeflate/LICENSE-MIT)
+
+
+## flate2 1.1.10
+
+- Upstream: https://github.com/rust-lang/flate2-rs
+- License: MIT OR Apache-2.0
+    - [LICENSE-APACHE](flate2/LICENSE-APACHE)
+    - [LICENSE-MIT](flate2/LICENSE-MIT)
 
 
 ## getrandom 0.4.3
@@ -176,6 +217,24 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](log/LICENSE-MIT)
 
 
+## miniz_oxide 0.8.9
+
+- Upstream: https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
+- License: MIT OR Zlib OR Apache-2.0
+    - [LICENSE-APACHE.md](miniz_oxide/LICENSE-APACHE.md)
+    - [LICENSE-MIT.md](miniz_oxide/LICENSE-MIT.md)
+    - [LICENSE-ZLIB.md](miniz_oxide/LICENSE-ZLIB.md)
+
+
+## miniz_oxide 0.9.1
+
+- Upstream: https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide
+- License: MIT OR Zlib OR Apache-2.0
+    - [LICENSE-APACHE.md](miniz_oxide/LICENSE-APACHE.md)
+    - [LICENSE-MIT.md](miniz_oxide/LICENSE-MIT.md)
+    - [LICENSE-ZLIB.md](miniz_oxide/LICENSE-ZLIB.md)
+
+
 ## mozjpeg-sys 2.2.3
 
 - Upstream: https://github.com/kornelski/mozjpeg-sys.git
@@ -199,6 +258,14 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
 - Upstream: https://github.com/oxipng/oxipng
 - License: MIT
     - [LICENSE-MIT](oxipng/LICENSE-MIT)
+
+
+## png 0.18.1
+
+- Upstream: https://github.com/image-rs/image-png
+- License: MIT OR Apache-2.0
+    - [LICENSE-APACHE](png/LICENSE-APACHE)
+    - [LICENSE-MIT](png/LICENSE-MIT)
 
 
 ## r-efi 6.0.0
@@ -234,6 +301,13 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-APACHE](rustix/LICENSE-APACHE)
     - [LICENSE-Apache-2.0_WITH_LLVM-exception](rustix/LICENSE-Apache-2.0_WITH_LLVM-exception)
     - [LICENSE-MIT](rustix/LICENSE-MIT)
+
+
+## simd-adler32 0.3.10
+
+- Upstream: https://github.com/mcountryman/simd-adler32
+- License: MIT
+    - [LICENSE.md](simd-adler32/LICENSE.md)
 
 
 
