@@ -408,6 +408,35 @@ fn assert_sanitized_apng(bytes: &[u8]) {
     assert!(saw_fdat);
 }
 
+fn riff_chunk(kind: [u8; 4], payload: &[u8], padding: u8) -> Vec<u8> {
+    let mut chunk = Vec::with_capacity(8 + payload.len() + payload.len() % 2);
+    chunk.extend_from_slice(&kind);
+    chunk.extend_from_slice(&u32::try_from(payload.len()).unwrap().to_le_bytes());
+    chunk.extend_from_slice(payload);
+    if !payload.len().is_multiple_of(2) {
+        chunk.push(padding);
+    }
+    chunk
+}
+
+fn join_chunks(prefix: &[u8], chunks: &[Vec<u8>]) -> Vec<u8> {
+    let mut bytes = prefix.to_vec();
+    for chunk in chunks {
+        bytes.extend_from_slice(chunk);
+    }
+    bytes
+}
+
+fn make_webp(chunks: &[Vec<u8>], trailing: &[u8]) -> Vec<u8> {
+    let body = join_chunks(b"WEBP", chunks);
+    let mut bytes = Vec::with_capacity(body.len() + trailing.len() + 8);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&u32::try_from(body.len()).unwrap().to_le_bytes());
+    bytes.extend_from_slice(&body);
+    bytes.extend_from_slice(trailing);
+    bytes
+}
+
 fn peel() -> Command {
     Command::new(env!("CARGO_BIN_EXE_peel"))
 }
@@ -435,6 +464,7 @@ fn optimizes_supported_formats_without_changing_image_data() {
     let directory = tempfile::tempdir().unwrap();
     let jpeg = directory.path().join("image.jpg");
     let png = directory.path().join("image.png");
+    let webp = directory.path().join("image.WeBp");
 
     let jpeg_bytes = jpeg_with_metadata();
     let jpeg_pixels = decode_jpeg(&jpeg_bytes);
@@ -444,9 +474,36 @@ fn optimizes_supported_formats_without_changing_image_data() {
     png_bytes.extend_from_slice(b"private-png-suffix");
     fs::write(&png, &png_bytes).unwrap();
 
-    let output = peel().arg(&jpeg).arg(&png).output().unwrap();
+    let vp8l = [0x2f, 0x01, 0x40, 0x00, 0x10, 0xaa, 0xbb];
+    let webp_input = make_webp(
+        &[
+            riff_chunk(*b"VP8X", &[0xfd, 1, 2, 3, 1, 0, 0, 1, 0, 0], 0),
+            riff_chunk(*b"ICCP", b"icc", 0xa1),
+            riff_chunk(*b"ALPH", &[0xd9, 0x11, 0x22, 0x33, 0x44], 0xa2),
+            riff_chunk(*b"VP8L", &vp8l, 0xa3),
+            riff_chunk(*b"EXIF", b"exif", 0),
+            riff_chunk(*b"XMP ", b"xmp", 0xa4),
+            riff_chunk(*b"PRIV", b"private", 0xa5),
+        ],
+        b"private-webp-suffix",
+    );
+    let webp_expected = make_webp(
+        &[
+            riff_chunk(*b"VP8X", &[0x10, 0, 0, 0, 1, 0, 0, 1, 0, 0], 0),
+            riff_chunk(*b"ALPH", &[0x19, 0x11, 0x22, 0x33, 0x44], 0),
+            riff_chunk(*b"VP8L", &vp8l, 0),
+        ],
+        &[],
+    );
+    fs::write(&webp, webp_input).unwrap();
+
+    let output = peel().arg(&jpeg).arg(&png).arg(&webp).output().unwrap();
     assert_success(&output);
-    assert!(String::from_utf8_lossy(&output.stdout).contains("Done: 2 optimized"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Done: 3 optimized"));
+    let webp_status = stdout.lines().find(|line| line.contains("(WebP,")).unwrap();
+    assert!(webp_status.contains("container normalized, metadata removed"));
+    assert!(!webp_status.contains("recompressed"));
 
     let optimized_jpeg = fs::read(&jpeg).unwrap();
     assert!(optimized_jpeg.len() < jpeg_bytes.len());
@@ -459,7 +516,9 @@ fn optimizes_supported_formats_without_changing_image_data() {
     assert_eq!(decode_png(&optimized_png), png_pixels);
     assert!(!optimized_png.ends_with(b"private-png-suffix"));
 
-    let paths = [&jpeg, &png];
+    assert_eq!(fs::read(&webp).unwrap(), webp_expected);
+
+    let paths = [&jpeg, &png, &webp];
     let before_second_run = paths
         .iter()
         .map(|path| {
@@ -471,11 +530,72 @@ fn optimizes_supported_formats_without_changing_image_data() {
         .collect::<Vec<_>>();
     let second = peel().args(paths).output().unwrap();
     assert_success(&second);
-    assert!(String::from_utf8_lossy(&second.stdout).contains("Done: 0 optimized, 2 unchanged"));
+    assert!(String::from_utf8_lossy(&second.stdout).contains("Done: 0 optimized, 3 unchanged"));
     for (path, (bytes, modified)) in paths.iter().zip(before_second_run) {
         assert_eq!(fs::read(path).unwrap(), bytes);
         assert_eq!(fs::metadata(path).unwrap().modified().unwrap(), modified);
     }
+}
+
+#[test]
+fn optimizes_animated_webp_without_changing_animation_data() {
+    let directory = tempfile::tempdir().unwrap();
+    let target = directory.path().join("animated-sample.webp");
+    let alpha = [0xd5, 0x51, 0x52, 0x53];
+    let frame_1 = [0x10, 0, 0, 0x9d, 0x01, 0x2a, 2, 0, 2, 0, 0xa1];
+    let frame_2 = [0x30, 0, 0, 0x9d, 0x01, 0x2a, 2, 0, 2, 0, 0xb2];
+    let header_1 = [0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 100, 0, 0, 0xfe];
+    let header_2 = [1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 250, 0, 0, 0xfd];
+    let input_frame_1 = join_chunks(
+        &header_1,
+        &[
+            riff_chunk(*b"ALPH", &alpha, 0),
+            riff_chunk(*b"VP8 ", &frame_1, 0xa1),
+            riff_chunk(*b"JUNK", b"x", 0xa2),
+        ],
+    );
+    let input_frame_2 = join_chunks(&header_2, &[riff_chunk(*b"VP8 ", &frame_2, 0xa3)]);
+    let input = make_webp(
+        &[
+            riff_chunk(*b"VP8X", &[0xd3, 1, 2, 3, 3, 0, 0, 3, 0, 0], 0),
+            riff_chunk(*b"ANIM", &[1, 2, 3, 4, 7, 0], 0),
+            riff_chunk(*b"ANMF", &input_frame_1, 0),
+            riff_chunk(*b"ANMF", &input_frame_2, 0),
+            riff_chunk(*b"NOTE", b"x", 0xa4),
+        ],
+        &[],
+    );
+
+    let mut clean_header_1 = header_1;
+    clean_header_1[15] = 0x02;
+    let mut clean_header_2 = header_2;
+    clean_header_2[15] = 0x01;
+    let expected_frame_1 = join_chunks(
+        &clean_header_1,
+        &[
+            riff_chunk(*b"ALPH", &[0x15, 0x51, 0x52, 0x53], 0),
+            riff_chunk(*b"VP8 ", &frame_1, 0),
+        ],
+    );
+    let expected_frame_2 = join_chunks(&clean_header_2, &[riff_chunk(*b"VP8 ", &frame_2, 0)]);
+    let expected = make_webp(
+        &[
+            riff_chunk(*b"VP8X", &[0x12, 0, 0, 0, 3, 0, 0, 3, 0, 0], 0),
+            riff_chunk(*b"ANIM", &[1, 2, 3, 4, 7, 0], 0),
+            riff_chunk(*b"ANMF", &expected_frame_1, 0),
+            riff_chunk(*b"ANMF", &expected_frame_2, 0),
+        ],
+        &[],
+    );
+    fs::write(&target, input).unwrap();
+
+    let output = peel()
+        .current_dir(directory.path())
+        .arg("animated-*.webp")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(fs::read(target).unwrap(), expected);
 }
 
 #[test]
@@ -514,14 +634,12 @@ fn expands_deduplicates_and_sorts_globs() {
 fn rejects_bad_inputs_without_losing_valid_work() {
     let directory = tempfile::tempdir().unwrap();
 
-    for extension in ["webp", "gif"] {
-        let unsupported = directory.path().join(format!("image.{extension}"));
-        fs::write(&unsupported, b"not an image").unwrap();
-        let output = peel().arg(&unsupported).output().unwrap();
-        assert_failure(&output);
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported file extension"));
-        assert_eq!(fs::read(&unsupported).unwrap(), b"not an image");
-    }
+    let unsupported = directory.path().join("image.gif");
+    fs::write(&unsupported, b"not an image").unwrap();
+    let output = peel().arg(&unsupported).output().unwrap();
+    assert_failure(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported file extension"));
+    assert_eq!(fs::read(&unsupported).unwrap(), b"not an image");
 
     assert_failure(&peel().arg(directory.path()).output().unwrap());
 
@@ -544,6 +662,15 @@ fn rejects_bad_inputs_without_losing_valid_work() {
     fs::write(&broken, b"not an image").unwrap();
     assert_failure(&peel().arg(&broken).output().unwrap());
     assert_eq!(fs::read(&broken).unwrap(), b"not an image");
+
+    let broken_webp = directory.path().join("broken.webp");
+    let mut webp_bytes = make_webp(&[riff_chunk(*b"VP8L", &[0x2f], 0)], &[]);
+    webp_bytes[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+    fs::write(&broken_webp, &webp_bytes).unwrap();
+    let output = peel().arg(&broken_webp).output().unwrap();
+    assert_failure(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("failed to optimize WebP"));
+    assert_eq!(fs::read(&broken_webp).unwrap(), webp_bytes);
 
     let target = directory.path().join("target.jpg");
     let link = directory.path().join("link.jpg");

@@ -1,6 +1,6 @@
 # Peel
 
-Optimizes JPEG and PNG images losslessly in place.
+Optimizes JPEG, PNG, and WebP images losslessly in place.
 
 It removes metadata and trailing data. This includes EXIF and color profiles. Files are left unchanged if optimization fails.
 
@@ -33,8 +33,8 @@ cargo uninstall peel
 ## Usage
 
 ~~~sh
-peel image.jpg image.png animation.apng
-peel "images/**/*.jpg" "images/**/*.jpeg" "images/**/*.png" "images/**/*.apng"
+peel image.jpg image.png image.webp animation.apng
+peel "images/**/*.jpg" "images/**/*.jpeg" "images/**/*.png" "images/**/*.apng" "images/**/*.webp"
 ~~~
 
 Quote glob patterns for consistent behavior across shells.

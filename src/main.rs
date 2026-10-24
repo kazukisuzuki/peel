@@ -100,11 +100,11 @@ fn parse_cli() -> Vec<OsString> {
     let mut matches = Command::new(env!("CARGO_PKG_NAME"))
         .version(env!("CARGO_PKG_VERSION"))
         .bin_name("peel")
-        .about("Optimizes JPEG and PNG images losslessly in place")
+        .about("Optimizes JPEG, PNG, and WebP images losslessly in place")
         .arg(
             Arg::new("patterns")
                 .value_name("PATTERN")
-                .help("File path or glob pattern (*.jpg, **/*.png, **/*.apng, and similar)")
+                .help("File path or glob pattern (*.jpg, **/*.png, **/*.webp, and similar)")
                 .value_parser(value_parser!(OsString))
                 .num_args(1..)
                 .action(ArgAction::Append)

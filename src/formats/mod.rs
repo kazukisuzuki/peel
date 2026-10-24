@@ -1,5 +1,6 @@
 mod jpeg;
 mod png;
+mod webp;
 
 use std::path::Path;
 
@@ -51,6 +52,11 @@ static HANDLERS: &[Handler] = &[
         extensions: &["png", "apng"],
         optimize: png::optimize,
     },
+    Handler {
+        name: "WebP",
+        extensions: &["webp"],
+        optimize: webp::optimize,
+    },
 ];
 
 pub(crate) fn supports_path(path: &Path) -> bool {
@@ -67,7 +73,7 @@ pub(crate) fn optimize(path: &Path, input: &[u8]) -> Result<(&'static str, Forma
 
 pub(crate) fn unsupported_extension(path: &Path) -> anyhow::Error {
     anyhow!(
-        "unsupported file extension: {} (expected .jpg, .jpeg, .png, or .apng)",
+        "unsupported file extension: {} (expected .jpg, .jpeg, .png, .apng, or .webp)",
         path.display()
     )
 }
