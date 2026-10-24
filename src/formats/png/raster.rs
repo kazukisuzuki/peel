@@ -276,7 +276,7 @@ fn row_bytes(width: usize, channels: usize, bit_depth: u8) -> Result<usize> {
         .ok_or_else(|| anyhow!("PNG row size overflow"))
 }
 
-fn channels(color_type: &RasterColorType) -> usize {
+pub(super) fn channels(color_type: &RasterColorType) -> usize {
     match color_type {
         RasterColorType::Grayscale { .. } | RasterColorType::Indexed { .. } => 1,
         RasterColorType::GrayscaleAlpha => 2,
@@ -285,7 +285,7 @@ fn channels(color_type: &RasterColorType) -> usize {
     }
 }
 
-fn decoded_channels(color_type: ColorType) -> usize {
+pub(super) fn decoded_channels(color_type: ColorType) -> usize {
     match color_type {
         ColorType::Grayscale | ColorType::Indexed => 1,
         ColorType::GrayscaleAlpha => 2,
@@ -305,7 +305,7 @@ fn packed_sample(data: &[u8], row_bytes: usize, depth: u8, x: usize, y: usize) -
     (byte >> shift) & ((1u8 << depth) - 1)
 }
 
-fn sample_max(depth: u8) -> u16 {
+pub(super) fn sample_max(depth: u8) -> u16 {
     if depth == 16 {
         u16::MAX
     } else {
@@ -313,6 +313,134 @@ fn sample_max(depth: u8) -> u16 {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct SampleView<'a> {
+    pub(super) image: &'a RasterImage,
+    pub(super) width: usize,
+    pub(super) height: usize,
+    pub(super) channels: usize,
+    pub(super) depth: u8,
+    pub(super) row_bytes: usize,
+}
+
+impl<'a> SampleView<'a> {
+    pub(super) fn new(image: &'a RasterImage) -> Result<Self> {
+        let width = image.width as usize;
+        let height = image.height as usize;
+        let channels = channels(&image.color_type);
+        let depth = image.bit_depth;
+        let bits_per_row = width
+            .checked_mul(channels)
+            .and_then(|samples| samples.checked_mul(usize::from(depth)))
+            .ok_or_else(|| anyhow!("PNG row size overflow"))?;
+        let row_bytes = bits_per_row
+            .checked_add(7)
+            .ok_or_else(|| anyhow!("PNG row size overflow"))?
+            / 8;
+        let expected = row_bytes
+            .checked_mul(height)
+            .ok_or_else(|| anyhow!("PNG image size overflow"))?;
+        if expected > MAX_DECOMPRESSED_SIZE || image.data.len() != expected {
+            bail!("PNG decoded sample length is invalid or exceeds the safety limit");
+        }
+        Ok(Self {
+            image,
+            width,
+            height,
+            channels,
+            depth,
+            row_bytes,
+        })
+    }
+
+    pub(super) fn sample(self, x: usize, y: usize, channel: usize) -> Result<u16> {
+        if x >= self.width || y >= self.height || channel >= self.channels {
+            bail!("PNG sample coordinate is out of bounds");
+        }
+        let sample_index = x * self.channels + channel;
+        let row_start = y * self.row_bytes;
+        match self.depth {
+            1 | 2 | 4 => {
+                let bit_offset = sample_index * usize::from(self.depth);
+                let byte = self.image.data[row_start + bit_offset / 8];
+                let shift = 8 - usize::from(self.depth) - bit_offset % 8;
+                Ok(u16::from((byte >> shift) & ((1u8 << self.depth) - 1)))
+            }
+            8 => Ok(u16::from(self.image.data[row_start + sample_index])),
+            16 => {
+                let offset = row_start + sample_index * 2;
+                Ok(u16::from_be_bytes([
+                    self.image.data[offset],
+                    self.image.data[offset + 1],
+                ]))
+            }
+            _ => bail!("unsupported PNG bit depth: {}", self.depth),
+        }
+    }
+}
+
+pub(super) fn has_nonzero_row_padding(image: &RasterImage) -> Result<bool> {
+    let view = SampleView::new(image)?;
+    let used_bits = view.width * view.channels * usize::from(view.depth);
+    let padding_bits = (8 - used_bits % 8) % 8;
+    if padding_bits == 0 || view.row_bytes == 0 {
+        return Ok(false);
+    }
+    let mask = (1u8 << padding_bits) - 1;
+    Ok((0..view.height).any(|row| image.data[(row + 1) * view.row_bytes - 1] & mask != 0))
+}
+
+pub(super) fn zero_row_padding(image: &mut RasterImage) -> Result<()> {
+    let view = SampleView::new(image)?;
+    let used_bits = view.width * view.channels * usize::from(view.depth);
+    let padding_bits = (8 - used_bits % 8) % 8;
+    let row_bytes = view.row_bytes;
+    let height = view.height;
+    if padding_bits == 0 || row_bytes == 0 {
+        return Ok(());
+    }
+    let keep_mask = !((1u8 << padding_bits) - 1);
+    for row in 0..height {
+        image.data[(row + 1) * row_bytes - 1] &= keep_mask;
+    }
+    Ok(())
+}
+
+pub(super) fn write_packed_sample(
+    data: &mut [u8],
+    row_bytes: usize,
+    depth: u8,
+    x: usize,
+    y: usize,
+    value: u8,
+) -> Result<()> {
+    if u16::from(value) > sample_max(depth) {
+        bail!("remapped PNG palette index does not fit the source bit depth");
+    }
+    let row_start = y
+        .checked_mul(row_bytes)
+        .ok_or_else(|| anyhow!("PNG row offset overflow"))?;
+    match depth {
+        1 | 2 | 4 => {
+            let bit_offset = x * usize::from(depth);
+            let offset = row_start + bit_offset / 8;
+            let shift = 8 - usize::from(depth) - bit_offset % 8;
+            let mask = ((1u8 << depth) - 1) << shift;
+            data[offset] = (data[offset] & !mask) | ((value << shift) & mask);
+        }
+        8 => data[row_start + x] = value,
+        _ => bail!("unsupported indexed PNG bit depth: {depth}"),
+    }
+    Ok(())
+}
+
+pub(super) fn decoded_byte_depth(bit_depth: BitDepth) -> usize {
+    match bit_depth {
+        BitDepth::Eight => 1,
+        BitDepth::Sixteen => 2,
+        _ => unreachable!("canonical decoding rejects sub-byte output"),
+    }
+}
 #[cfg(test)]
 mod tests {
     use std::borrow::Cow;
