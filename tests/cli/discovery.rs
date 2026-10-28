@@ -57,16 +57,27 @@ fn rejects_bad_inputs_without_losing_valid_work() {
     fs::write(&valid, sample_jpeg()).unwrap();
     let output = peel()
         .current_dir(directory.path())
-        .arg("[")
         .arg("missing-*.png")
         .arg("valid.jpg")
         .output()
         .unwrap();
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("[OK] valid.jpg:"));
+
+    let output = peel()
+        .current_dir(directory.path())
+        .arg("missing-*.png")
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Done: 0 optimized"));
+
+    let missing = directory.path().join("missing.jpg");
+    let output = peel().arg("[").arg(&missing).output().unwrap();
     assert_failure(&output);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("invalid glob pattern"));
-    assert!(stderr.contains("matched no supported regular files"));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("[OK] valid.jpg:"));
+    assert!(stderr.contains("failed to inspect literal path"));
 
     let broken = directory.path().join("broken.png");
     fs::write(&broken, b"not an image").unwrap();

@@ -48,7 +48,6 @@ impl DiscoveryState {
             }
         };
 
-        let mut supported_matches = 0usize;
         for entry in entries {
             let path = match entry {
                 Ok(path) => path,
@@ -71,15 +70,8 @@ impl DiscoveryState {
                 && !metadata.file_type().is_symlink()
                 && formats::supports_path(&path)
             {
-                supported_matches += 1;
                 self.add_file(path);
             }
-        }
-
-        if supported_matches == 0 {
-            self.record_error(anyhow!(
-                "glob pattern matched no supported regular files: {pattern:?}"
-            ));
         }
     }
 
@@ -99,9 +91,7 @@ pub fn discover(patterns: &[OsString]) -> (Vec<PathBuf>, Vec<anyhow::Error>) {
                 Ok(()) => state.add_file(path),
                 Err(error) => state.record_error(error),
             },
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound || looks_like_glob(pattern) =>
-            {
+            Err(_) if looks_like_glob(pattern) => {
                 state.expand_pattern(pattern);
             }
             Err(error) => state.record_error(
