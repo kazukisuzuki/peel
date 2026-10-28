@@ -336,9 +336,10 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](windows-sys/LICENSE-MIT)
 
 
-## Rust standard library
+## Rust standard library 1.99.1
 
-- Upstream: https://github.com/rust-lang/rust
+- Upstream: https://github.com/rust-lang/rust/tree/1.99.1/library
+- Toolchain: rustc 1.99.1 (58cf8f9c3 2026-10-13)
 - License: Apache-2.0 OR MIT, with separately licensed components
     - [COPYRIGHT-library.html](rust/COPYRIGHT-library.html)
     - [LICENSE-APACHE](rust/LICENSE-APACHE)
