@@ -49,11 +49,12 @@ impl RasterImage {
         }
         validate_format(&color_type, bit_depth)?;
 
-        let width = usize::try_from(width).context("PNG width does not fit in memory")?;
-        let height = usize::try_from(height).context("PNG height does not fit in memory")?;
-        let row_bytes = row_bytes(width, channels(&color_type), bit_depth)?;
-        let expected = row_bytes
-            .checked_mul(height)
+        let width_usize = usize::try_from(width).context("PNG width does not fit in memory")?;
+        let height_usize = usize::try_from(height).context("PNG height does not fit in memory")?;
+        let layout =
+            RasterLayout::new(width_usize, height_usize, channels(&color_type), bit_depth)?;
+        let expected = layout
+            .data_len()
             .filter(|size| *size <= MAX_DECOMPRESSED_SIZE)
             .ok_or_else(|| anyhow!("PNG raster exceeds the decompressed size limit"))?;
         if data.len() != expected {
@@ -69,9 +70,9 @@ impl RasterImage {
                 if palette.is_empty() || palette.len() > 256 || palette.len() > max_entries {
                     bail!("PNG palette length is invalid for its bit depth");
                 }
-                for y in 0..height {
-                    for x in 0..width {
-                        let index = usize::from(packed_sample(&data, row_bytes, bit_depth, x, y));
+                for y in 0..height_usize {
+                    for x in 0..width_usize {
+                        let index = usize::from(layout.sample(&data, x, y, 0)?);
                         if index >= palette.len() {
                             bail!("PNG palette index {index} is out of range");
                         }
@@ -95,8 +96,8 @@ impl RasterImage {
         }
 
         Ok(Self {
-            width: u32::try_from(width).expect("width came from u32"),
-            height: u32::try_from(height).expect("height came from u32"),
+            width,
+            height,
             bit_depth,
             color_type,
             data,
@@ -128,13 +129,14 @@ pub(super) fn decode_static_raster(input: &[u8], limit: usize) -> Result<Decoded
         )
     };
 
-    let expected_row_bytes = row_bytes(
+    let layout = RasterLayout::new(
         usize::try_from(width).context("PNG width does not fit in memory")?,
+        usize::try_from(height).context("PNG height does not fit in memory")?,
         decoded_channels(decoded_color_type),
         bit_depth,
     )?;
-    let expected_size = expected_row_bytes
-        .checked_mul(usize::try_from(height).context("PNG height does not fit in memory")?)
+    let expected_size = layout
+        .data_len()
         .filter(|size| *size <= limit && *size <= MAX_DECOMPRESSED_SIZE)
         .ok_or_else(|| anyhow!("decoded PNG exceeds the decompressed size limit"))?;
     let output_size = reader
@@ -149,7 +151,7 @@ pub(super) fn decode_static_raster(input: &[u8], limit: usize) -> Result<Decoded
         || output.height != height
         || output.color_type != decoded_color_type
         || depth_value(output.bit_depth) != bit_depth
-        || output.line_size != expected_row_bytes
+        || output.line_size != layout.row_bytes
         || output.buffer_size() != expected_size
     {
         bail!("PNG decoder output format did not match the source header");
@@ -267,15 +269,6 @@ fn validate_format(color_type: &RasterColorType, bit_depth: u8) -> Result<()> {
     Ok(())
 }
 
-fn row_bytes(width: usize, channels: usize, bit_depth: u8) -> Result<usize> {
-    width
-        .checked_mul(channels)
-        .and_then(|samples| samples.checked_mul(usize::from(bit_depth)))
-        .and_then(|bits| bits.checked_add(7))
-        .map(|bits| bits / 8)
-        .ok_or_else(|| anyhow!("PNG row size overflow"))
-}
-
 pub(super) fn channels(color_type: &RasterColorType) -> usize {
     match color_type {
         RasterColorType::Grayscale { .. } | RasterColorType::Indexed { .. } => 1,
@@ -298,13 +291,6 @@ fn depth_value(bit_depth: BitDepth) -> u8 {
     bit_depth as u8
 }
 
-fn packed_sample(data: &[u8], row_bytes: usize, depth: u8, x: usize, y: usize) -> u8 {
-    let bit_offset = x * usize::from(depth);
-    let byte = data[y * row_bytes + bit_offset / 8];
-    let shift = 8 - usize::from(depth) - bit_offset % 8;
-    (byte >> shift) & ((1u8 << depth) - 1)
-}
-
 pub(super) fn sample_max(depth: u8) -> u16 {
     if depth == 16 {
         u16::MAX
@@ -314,21 +300,17 @@ pub(super) fn sample_max(depth: u8) -> u16 {
 }
 
 #[derive(Clone, Copy)]
-pub(super) struct SampleView<'a> {
-    pub(super) image: &'a RasterImage,
-    pub(super) width: usize,
-    pub(super) height: usize,
-    pub(super) channels: usize,
-    pub(super) depth: u8,
-    pub(super) row_bytes: usize,
+struct RasterLayout {
+    width: usize,
+    height: usize,
+    channels: usize,
+    depth: u8,
+    row_bytes: usize,
+    padding_mask: u8,
 }
 
-impl<'a> SampleView<'a> {
-    pub(super) fn new(image: &'a RasterImage) -> Result<Self> {
-        let width = image.width as usize;
-        let height = image.height as usize;
-        let channels = channels(&image.color_type);
-        let depth = image.bit_depth;
+impl RasterLayout {
+    fn new(width: usize, height: usize, channels: usize, depth: u8) -> Result<Self> {
         let bits_per_row = width
             .checked_mul(channels)
             .and_then(|samples| samples.checked_mul(usize::from(depth)))
@@ -337,23 +319,36 @@ impl<'a> SampleView<'a> {
             .checked_add(7)
             .ok_or_else(|| anyhow!("PNG row size overflow"))?
             / 8;
-        let expected = row_bytes
-            .checked_mul(height)
-            .ok_or_else(|| anyhow!("PNG image size overflow"))?;
-        if expected > MAX_DECOMPRESSED_SIZE || image.data.len() != expected {
-            bail!("PNG decoded sample length is invalid or exceeds the safety limit");
-        }
+        let padding_bits = (8 - bits_per_row % 8) % 8;
+        let padding_mask = if padding_bits == 0 {
+            0
+        } else {
+            (1u8 << padding_bits) - 1
+        };
         Ok(Self {
-            image,
             width,
             height,
             channels,
             depth,
             row_bytes,
+            padding_mask,
         })
     }
 
-    pub(super) fn sample(self, x: usize, y: usize, channel: usize) -> Result<u16> {
+    fn for_image(image: &RasterImage) -> Result<Self> {
+        Self::new(
+            usize::try_from(image.width).context("PNG width does not fit in memory")?,
+            usize::try_from(image.height).context("PNG height does not fit in memory")?,
+            channels(&image.color_type),
+            image.bit_depth,
+        )
+    }
+
+    fn data_len(self) -> Option<usize> {
+        self.row_bytes.checked_mul(self.height)
+    }
+
+    fn sample(self, data: &[u8], x: usize, y: usize, channel: usize) -> Result<u16> {
         if x >= self.width || y >= self.height || channel >= self.channels {
             bail!("PNG sample coordinate is out of bounds");
         }
@@ -362,46 +357,78 @@ impl<'a> SampleView<'a> {
         match self.depth {
             1 | 2 | 4 => {
                 let bit_offset = sample_index * usize::from(self.depth);
-                let byte = self.image.data[row_start + bit_offset / 8];
+                let byte = data[row_start + bit_offset / 8];
                 let shift = 8 - usize::from(self.depth) - bit_offset % 8;
                 Ok(u16::from((byte >> shift) & ((1u8 << self.depth) - 1)))
             }
-            8 => Ok(u16::from(self.image.data[row_start + sample_index])),
+            8 => Ok(u16::from(data[row_start + sample_index])),
             16 => {
                 let offset = row_start + sample_index * 2;
-                Ok(u16::from_be_bytes([
-                    self.image.data[offset],
-                    self.image.data[offset + 1],
-                ]))
+                Ok(u16::from_be_bytes([data[offset], data[offset + 1]]))
             }
             _ => bail!("unsupported PNG bit depth: {}", self.depth),
         }
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct SampleView<'a> {
+    image: &'a RasterImage,
+    layout: RasterLayout,
+}
+
+impl<'a> SampleView<'a> {
+    pub(super) fn new(image: &'a RasterImage) -> Result<Self> {
+        let layout = RasterLayout::for_image(image)?;
+        let expected = layout
+            .data_len()
+            .ok_or_else(|| anyhow!("PNG image size overflow"))?;
+        if expected > MAX_DECOMPRESSED_SIZE || image.data.len() != expected {
+            bail!("PNG decoded sample length is invalid or exceeds the safety limit");
+        }
+        Ok(Self { image, layout })
+    }
+
+    pub(super) fn width(self) -> usize {
+        self.layout.width
+    }
+
+    pub(super) fn height(self) -> usize {
+        self.layout.height
+    }
+
+    pub(super) fn depth(self) -> u8 {
+        self.layout.depth
+    }
+
+    pub(super) fn row_bytes(self) -> usize {
+        self.layout.row_bytes
+    }
+
+    pub(super) fn sample(self, x: usize, y: usize, channel: usize) -> Result<u16> {
+        self.layout.sample(&self.image.data, x, y, channel)
+    }
+}
+
 pub(super) fn has_nonzero_row_padding(image: &RasterImage) -> Result<bool> {
     let view = SampleView::new(image)?;
-    let used_bits = view.width * view.channels * usize::from(view.depth);
-    let padding_bits = (8 - used_bits % 8) % 8;
-    if padding_bits == 0 || view.row_bytes == 0 {
+    let layout = view.layout;
+    if layout.padding_mask == 0 || layout.row_bytes == 0 {
         return Ok(false);
     }
-    let mask = (1u8 << padding_bits) - 1;
-    Ok((0..view.height).any(|row| image.data[(row + 1) * view.row_bytes - 1] & mask != 0))
+    Ok((0..layout.height)
+        .any(|row| image.data[(row + 1) * layout.row_bytes - 1] & layout.padding_mask != 0))
 }
 
 pub(super) fn zero_row_padding(image: &mut RasterImage) -> Result<()> {
     let view = SampleView::new(image)?;
-    let used_bits = view.width * view.channels * usize::from(view.depth);
-    let padding_bits = (8 - used_bits % 8) % 8;
-    let row_bytes = view.row_bytes;
-    let height = view.height;
-    if padding_bits == 0 || row_bytes == 0 {
+    let layout = view.layout;
+    if layout.padding_mask == 0 || layout.row_bytes == 0 {
         return Ok(());
     }
-    let keep_mask = !((1u8 << padding_bits) - 1);
-    for row in 0..height {
-        image.data[(row + 1) * row_bytes - 1] &= keep_mask;
+    let keep_mask = !layout.padding_mask;
+    for row in 0..layout.height {
+        image.data[(row + 1) * layout.row_bytes - 1] &= keep_mask;
     }
     Ok(())
 }
@@ -605,6 +632,52 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn shares_packed_samples_and_row_padding_layout() {
+        let palette = vec![
+            Rgba8 {
+                r: 0,
+                g: 0,
+                b: 0,
+                a: u8::MAX,
+            },
+            Rgba8 {
+                r: u8::MAX,
+                g: u8::MAX,
+                b: u8::MAX,
+                a: u8::MAX,
+            },
+        ];
+        let mut image = RasterImage::new(
+            3,
+            2,
+            1,
+            RasterColorType::Indexed { palette },
+            vec![0b1011_1111, 0b0101_1111],
+        )
+        .unwrap();
+
+        let view = SampleView::new(&image).unwrap();
+        assert_eq!(view.row_bytes(), 1);
+        assert_eq!(view.sample(0, 0, 0).unwrap(), 1);
+        assert_eq!(view.sample(1, 0, 0).unwrap(), 0);
+        assert_eq!(view.sample(2, 1, 0).unwrap(), 0);
+        assert!(view.sample(3, 0, 0).is_err());
+        assert!(view.sample(0, 2, 0).is_err());
+        assert!(view.sample(0, 0, 1).is_err());
+        assert!(has_nonzero_row_padding(&image).unwrap());
+
+        zero_row_padding(&mut image).unwrap();
+        assert_eq!(image.data, [0b1010_0000, 0b0100_0000]);
+        assert!(!has_nonzero_row_padding(&image).unwrap());
+    }
+
+    #[test]
+    fn rejects_layout_overflow_and_safety_limit() {
+        assert!(RasterLayout::new(usize::MAX, 1, 4, 16).is_err());
+        assert!(RasterImage::new(u32::MAX, 1, 16, RasterColorType::Rgba, Vec::new(),).is_err());
     }
 
     fn encode(info: png::Info<'static>, data: &[u8]) -> Vec<u8> {

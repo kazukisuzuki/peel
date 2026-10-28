@@ -15,7 +15,7 @@ const MAX_DECOMPRESSED_SIZE: usize = 128 * 1024 * 1024;
 
 pub(super) fn optimize(input: &[u8]) -> Result<FormatOutcome> {
     let audit = inspect(input)?;
-    if audit.animation.is_some() {
+    if audit.is_animated {
         return optimize_apng(input, audit.metadata_cleanup_required());
     }
 

@@ -120,8 +120,8 @@ fn compact_indexed_palette(image: &mut RasterImage) -> Result<()> {
     };
     let view = SampleView::new(image)?;
     let mut used = vec![false; palette.len()];
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             let index = usize::from(view.sample(x, y, 0)?);
             let entry = used
                 .get_mut(index)
@@ -139,7 +139,8 @@ fn compact_indexed_palette(image: &mut RasterImage) -> Result<()> {
         }
         let key = (color.r, color.g, color.b, color.a);
         let new_index = *colors.entry(key).or_insert_with(|| {
-            let new_index = compact.len() as u8;
+            let new_index = u8::try_from(compact.len())
+                .expect("PNG palette indices fit in u8 because palettes have at most 256 entries");
             compact.push(color);
             new_index
         });
@@ -156,13 +157,13 @@ fn compact_indexed_palette(image: &mut RasterImage) -> Result<()> {
     }
 
     let mut data = vec![0; image.data.len()];
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             let old_index = usize::from(view.sample(x, y, 0)?);
             write_packed_sample(
                 &mut data,
-                view.row_bytes,
-                view.depth,
+                view.row_bytes(),
+                view.depth(),
                 x,
                 y,
                 remap[old_index],
@@ -185,8 +186,8 @@ fn indexed_to_direct(image: &RasterImage) -> Result<Option<RasterImage>> {
     let alpha = palette.iter().any(|color| color.a != u8::MAX);
     let channels = if grayscale { 1usize } else { 3 } + usize::from(alpha);
     let capacity = view
-        .width
-        .checked_mul(view.height)
+        .width()
+        .checked_mul(view.height())
         .and_then(|pixels| pixels.checked_mul(channels))
         .filter(|size| *size <= MAX_DECOMPRESSED_SIZE);
     let Some(capacity) = capacity else {
@@ -194,8 +195,8 @@ fn indexed_to_direct(image: &RasterImage) -> Result<Option<RasterImage>> {
     };
 
     let mut data = Vec::with_capacity(capacity);
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             let index = usize::from(view.sample(x, y, 0)?);
             let color = palette
                 .get(index)
@@ -234,7 +235,7 @@ fn exact_alpha_to_trns(image: &RasterImage) -> Result<Option<RasterImage>> {
     };
     let view = SampleView::new(image)?;
     let alpha_channel = color_channels;
-    let max_sample = sample_max(view.depth);
+    let max_sample = sample_max(view.depth());
     let color_at = |x, y| -> Result<[u16; 3]> {
         let mut color = [0; 3];
         for (channel, sample) in color.iter_mut().take(color_channels).enumerate() {
@@ -244,8 +245,8 @@ fn exact_alpha_to_trns(image: &RasterImage) -> Result<Option<RasterImage>> {
     };
     let mut transparent_color = None;
 
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             let alpha = view.sample(x, y, alpha_channel)?;
             if alpha != 0 && alpha != max_sample {
                 return Ok(None);
@@ -264,8 +265,8 @@ fn exact_alpha_to_trns(image: &RasterImage) -> Result<Option<RasterImage>> {
     let Some(transparent_color) = transparent_color else {
         return Ok(None);
     };
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             if view.sample(x, y, alpha_channel)? == max_sample
                 && color_at(x, y)? == transparent_color
             {
@@ -274,20 +275,22 @@ fn exact_alpha_to_trns(image: &RasterImage) -> Result<Option<RasterImage>> {
         }
     }
 
-    let bytes_per_sample = usize::from(view.depth / 8);
+    let bytes_per_sample = usize::from(view.depth() / 8);
     let capacity = view
-        .width
-        .checked_mul(view.height)
+        .width()
+        .checked_mul(view.height())
         .and_then(|pixels| pixels.checked_mul(color_channels))
         .and_then(|samples| samples.checked_mul(bytes_per_sample))
         .ok_or_else(|| anyhow!("PNG alpha reduction size overflow"))?;
     let mut data = Vec::with_capacity(capacity);
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             for channel in 0..color_channels {
                 let sample = view.sample(x, y, channel)?;
-                if view.depth == 8 {
-                    data.push(sample as u8);
+                if view.depth() == 8 {
+                    data.push(
+                        u8::try_from(sample).expect("samples from an 8-bit PNG always fit in u8"),
+                    );
                 } else {
                     data.extend_from_slice(&sample.to_be_bytes());
                 }
@@ -324,8 +327,8 @@ fn remove_unused_direct_trns(image: &mut RasterImage) -> Result<()> {
             transparent: Some(transparent),
         } => {
             let mut used = false;
-            for y in 0..view.height {
-                for x in 0..view.width {
+            for y in 0..view.height() {
+                for x in 0..view.width() {
                     used |= view.sample(x, y, 0)? == transparent;
                 }
             }
@@ -335,8 +338,8 @@ fn remove_unused_direct_trns(image: &mut RasterImage) -> Result<()> {
             transparent: Some(transparent),
         } => {
             let mut used = false;
-            for y in 0..view.height {
-                for x in 0..view.width {
+            for y in 0..view.height() {
+                for x in 0..view.width() {
                     used |= view.sample(x, y, 0)? == transparent[0]
                         && view.sample(x, y, 1)? == transparent[1]
                         && view.sample(x, y, 2)? == transparent[2];

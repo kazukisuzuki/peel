@@ -16,7 +16,7 @@ use super::raster::{
 
 pub(super) fn verify_candidate(source: &DecodedImage, candidate: &[u8]) -> Result<()> {
     let audit = inspect(candidate)?;
-    if audit.animation.is_some() || audit.ancillary_or_trailing || audit.truecolor_palette {
+    if audit.is_animated || audit.ancillary_or_trailing || audit.truecolor_palette {
         bail!("PNG output is not structurally sanitized");
     }
 
@@ -50,7 +50,7 @@ fn checked_output_buffer_size(size: Option<usize>) -> Result<usize> {
 
 pub(super) fn verify_apng_candidate(source: &[u8], candidate: &[u8]) -> Result<()> {
     let candidate_audit = inspect(candidate)?;
-    if candidate_audit.animation.is_none() {
+    if !candidate_audit.is_animated {
         bail!("optimized output is not an APNG");
     }
     if candidate_audit.metadata_cleanup_required() {
@@ -113,9 +113,9 @@ pub(super) fn verify_apng_candidate(source: &[u8], candidate: &[u8]) -> Result<(
         )?;
         compare_decoded_frames(
             frame_index,
-            source_output,
+            &source_output,
             &source_buffer,
-            candidate_output,
+            &candidate_output,
             &candidate_buffer,
         )?;
     }
@@ -155,9 +155,9 @@ fn compare_frame_control(
 
 fn compare_decoded_frames(
     frame_index: u32,
-    before_info: OutputInfo,
+    before_info: &OutputInfo,
     before_data: &[u8],
-    after_info: OutputInfo,
+    after_info: &OutputInfo,
     after_data: &[u8],
 ) -> Result<()> {
     if before_info.width != after_info.width || before_info.height != after_info.height {
@@ -174,8 +174,8 @@ fn compare_decoded_frames(
     for pixel_index in 0..pixel_count {
         let x = pixel_index % width;
         let y = pixel_index / width;
-        let before = canonical_output_pixel(&before_info, before_data, x, y);
-        let after = canonical_output_pixel(&after_info, after_data, x, y);
+        let before = canonical_output_pixel(before_info, before_data, x, y);
+        let after = canonical_output_pixel(after_info, after_data, x, y);
         if before != after {
             bail!(
                 "APNG frame {frame_index} canonical pixel {pixel_index} changed during sanitation"
@@ -353,8 +353,8 @@ fn verify_sanitized_representation(image: &RasterImage, saw_trns: bool) -> Resul
     match &image.color_type {
         RasterColorType::Indexed { palette } => {
             let mut used = vec![false; palette.len()];
-            for y in 0..view.height {
-                for x in 0..view.width {
+            for y in 0..view.height() {
+                for x in 0..view.width() {
                     let index = usize::from(view.sample(x, y, 0)?);
                     let entry = used
                         .get_mut(index)
@@ -420,8 +420,8 @@ fn any_pixel(
     mut predicate: impl FnMut(SampleView<'_>, usize, usize) -> Result<bool>,
 ) -> Result<bool> {
     let view = SampleView::new(image)?;
-    for y in 0..view.height {
-        for x in 0..view.width {
+    for y in 0..view.height() {
+        for x in 0..view.width() {
             if predicate(view, x, y)? {
                 return Ok(true);
             }
