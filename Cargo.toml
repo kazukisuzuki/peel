@@ -1,6 +1,6 @@
 [package]
 name = "peel"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 description = "A lossless optimizer for JPEG, PNG, and WebP images"
 license = "MIT"
@@ -19,6 +19,7 @@ tempfile = "3"
 
 [dev-dependencies]
 jpeg-decoder = { version = "0.3", default-features = false }
+jpeg-encoder = { version = "0.7", default-features = false }
 
 [profile.release]
 codegen-units = 1

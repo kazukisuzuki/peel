@@ -457,9 +457,17 @@ mod tests {
     #[test]
     fn failures_only_retains_only_failed_files() {
         let directory = tempfile::tempdir().unwrap();
-        let valid = directory.path().join("valid.jpg");
+        let valid = directory.path().join("valid.png");
         let broken = directory.path().join("broken.png");
-        fs::write(&valid, include_bytes!("../tests/fixtures/sample.jpg")).unwrap();
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[0, 0, 0]).unwrap();
+        }
+        fs::write(&valid, png_bytes).unwrap();
         fs::write(&broken, b"not a PNG").unwrap();
 
         let output = optimize_files(vec![valid, broken.clone()], Retention::FailuresOnly);

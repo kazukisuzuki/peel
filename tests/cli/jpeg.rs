@@ -1,7 +1,27 @@
+use std::sync::OnceLock;
+
 use jpeg_decoder::Decoder as JpegDecoder;
+use jpeg_encoder::{ColorType, Encoder as JpegEncoder};
 
 pub(super) fn sample_jpeg() -> &'static [u8] {
-    include_bytes!("../fixtures/sample.jpg")
+    static JPEG: OnceLock<Vec<u8>> = OnceLock::new();
+
+    JPEG.get_or_init(|| {
+        const WIDTH: u16 = 64;
+        const HEIGHT: u16 = 64;
+        let mut pixels = Vec::with_capacity(usize::from(WIDTH) * usize::from(HEIGHT) * 3);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                pixels.extend_from_slice(&[(x * 4) as u8, (y * 4) as u8, ((x + y) * 2) as u8]);
+            }
+        }
+
+        let mut jpeg = Vec::new();
+        JpegEncoder::new(&mut jpeg, 90)
+            .encode(&pixels, WIDTH, HEIGHT, ColorType::Rgb)
+            .expect("test JPEG should encode");
+        jpeg
+    })
 }
 
 pub(super) fn decode_jpeg(jpeg: &[u8]) -> Vec<u8> {
