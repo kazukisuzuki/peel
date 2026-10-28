@@ -35,9 +35,12 @@ cargo uninstall peel
 ~~~sh
 peel image.jpg image.png image.webp animation.apng
 peel "images/**/*.jpg" "images/**/*.jpeg" "images/**/*.png" "images/**/*.apng" "images/**/*.webp"
+peel --quiet "images/**/*.jpg" "images/**/*.png" "images/**/*.webp"
 ~~~
 
 Quote glob patterns for consistent behavior across shells.
+
+Use `--quiet`/`-q` to suppress per-file output. The summary and errors are still shown.
 
 
 ## License

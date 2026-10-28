@@ -95,3 +95,34 @@ fn rejects_bad_inputs_without_losing_valid_work() {
     assert_failure(&peel().arg(&link).output().unwrap());
     assert_eq!(fs::read(&target).unwrap(), sample_jpeg());
 }
+
+#[test]
+fn quiet_keeps_errors_and_distinguishes_failure_types() {
+    let directory = tempfile::tempdir().unwrap();
+    let valid = directory.path().join("valid.jpg");
+    let broken = directory.path().join("broken.png");
+    fs::write(&valid, sample_jpeg()).unwrap();
+    fs::write(&broken, b"not an image").unwrap();
+
+    let output = peel()
+        .current_dir(directory.path())
+        .arg("--quiet")
+        .arg("[")
+        .arg("valid.jpg")
+        .arg("broken.png")
+        .output()
+        .unwrap();
+
+    assert_failure(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.starts_with("Done: 1 optimized, 0 unchanged, 1 file failed, 1 input error,"));
+    assert!(!stdout.contains("valid.jpg"));
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid glob pattern"));
+    assert!(stderr.contains("broken.png"));
+    assert!(stderr.contains("failed to optimize PNG"));
+    assert_ne!(fs::read(&valid).unwrap(), sample_jpeg());
+    assert_eq!(fs::read(&broken).unwrap(), b"not an image");
+}

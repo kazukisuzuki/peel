@@ -79,3 +79,29 @@ fn optimizes_supported_formats_without_changing_image_data() {
     let second = assert_second_run_unchanged(&paths);
     assert!(String::from_utf8_lossy(&second.stdout).contains("Done: 0 optimized, 3 unchanged"));
 }
+
+#[test]
+fn quiet_flags_suppress_per_file_output_without_changing_work() {
+    for flag in ["-q", "--quiet"] {
+        let directory = tempfile::tempdir().unwrap();
+        let jpeg = directory.path().join("quiet.jpg");
+        let input = jpeg_with_metadata();
+        fs::write(&jpeg, &input).unwrap();
+
+        let output = peel().arg(flag).arg(&jpeg).output().unwrap();
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert_eq!(stdout.lines().count(), 1);
+        assert!(stdout.starts_with("Done: 1 optimized, 0 unchanged"));
+        assert!(stdout.contains("net saved"));
+        assert!(!stdout.contains("quiet.jpg"));
+
+        let optimized = fs::read(&jpeg).unwrap();
+        assert!(optimized.len() < input.len());
+
+        let second = peel().arg(flag).arg(&jpeg).output().unwrap();
+        assert_success(&second);
+        let second_stdout = String::from_utf8(second.stdout).unwrap();
+        assert!(second_stdout.starts_with("Done: 0 optimized, 1 unchanged"));
+    }
+}
