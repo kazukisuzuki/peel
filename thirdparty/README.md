@@ -87,7 +87,7 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](clap_lex/LICENSE-MIT)
 
 
-## crc32fast 1.5.3
+## crc32fast 1.5.5
 
 - Upstream: https://github.com/srijs/rust-crc32fast
 - License: MIT OR Apache-2.0
@@ -103,7 +103,7 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](equivalent/LICENSE-MIT)
 
 
-## errno 0.3.14
+## errno 0.3.15
 
 - Upstream: https://github.com/lambda-fairy/rust-errno
 - License: MIT OR Apache-2.0
@@ -127,7 +127,7 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](fdeflate/LICENSE-MIT)
 
 
-## flate2 1.1.10
+## flate2 1.1.11
 
 - Upstream: https://github.com/rust-lang/flate2-rs
 - License: MIT OR Apache-2.0
@@ -209,7 +209,7 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](linux-raw-sys/LICENSE-MIT)
 
 
-## log 0.4.34
+## log 0.4.35
 
 - Upstream: https://github.com/rust-lang/log
 - License: MIT OR Apache-2.0
@@ -293,7 +293,7 @@ This software is based in part on the work of the Independent JPEG Group. Bundle
     - [LICENSE-MIT](rustc-hash/LICENSE-MIT)
 
 
-## rustix 1.1.5
+## rustix 1.1.6
 
 - Upstream: https://github.com/bytecodealliance/rustix
 - License: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
